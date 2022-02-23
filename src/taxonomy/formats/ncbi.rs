@@ -1,5 +1,6 @@
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
+    fmt,
     fs::File,
     io::{self, BufRead, BufReader},
     num::ParseIntError,
@@ -8,29 +9,76 @@ use std::{
 
 use crate::taxonomy::NodeId;
 use newick_rs::SimpleTree;
+use serde::{Deserialize, Serialize, ser::SerializeMap, Serializer, Deserializer};
 use string_interner::{
-    backend::{Backend, BufferBackend},
-    StringInterner,
+    backend::{Backend, StringBackend},
+    StringInterner, Symbol,
 };
 use thiserror::Error;
 
 pub type TaxId = NodeId;
-pub type Symbol = <BufferBackend as Backend>::Symbol;
-pub type RankId = Symbol;
+pub type RankSymbol = <StringBackend as Backend>::Symbol;
 
+#[derive(Deserialize, Serialize)]
 pub struct NcbiTaxonomy<Names> {
     pub root: TaxId,
 
     pub parent_ids: HashMap<TaxId, TaxId>,
     children_lookup: HashMap<TaxId, Vec<TaxId>>,
 
-    pub ranks: HashMap<TaxId, RankId>,
-    pub ranks_interner: StringInterner<BufferBackend>,
+    #[serde(deserialize_with = "deserialize_ranks", serialize_with = "serialize_ranks")]
+    pub ranks: HashMap<TaxId, RankSymbol>,
+    pub ranks_interner: StringInterner,
 
     // old to new
     pub merged_taxids: Option<HashMap<TaxId, TaxId>>,
 
     pub names: Names,
+}
+
+pub fn serialize_ranks<S: Serializer>(ranks: &HashMap<TaxId, RankSymbol>, serializer: S) -> Result<S::Ok, S::Error> {
+    let mut ranks_s = serializer.serialize_map(Some(ranks.len()))?;
+
+    for (node, rank_sym) in ranks.iter() {
+        ranks_s.serialize_entry(node, &rank_sym.to_usize())?;
+    }
+
+    ranks_s.end()
+}
+
+pub fn deserialize_ranks<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HashMap<TaxId, RankSymbol>, D::Error> {
+    use serde::de::{MapAccess, Visitor};
+
+    struct RanksVisitor {}
+
+    impl<'de> Visitor<'de> for RanksVisitor {
+        type Value = HashMap<TaxId, RankSymbol>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("ranks dictionary")
+        }
+
+        fn visit_map<M: MapAccess<'de>>(self, mut access: M) -> Result<Self::Value, M::Error> {
+            let mut res = HashMap::with_capacity(access.size_hint().unwrap_or(0));
+
+            while let Some((node, rank_sym_usize)) = access.next_entry()? {
+                let rank_sym = RankSymbol::try_from_usize(rank_sym_usize).ok_or_else(|| {
+                    <M::Error as serde::de::Error>::invalid_value(
+                        serde::de::Unexpected::Unsigned(rank_sym_usize as u64),
+                        &"a valid StringInterner symbol (as usize)",
+                    )
+                })?;
+
+                res.insert(node, rank_sym);
+            }
+
+            Ok(res)
+        }
+    }
+
+    deserializer.deserialize_map(RanksVisitor {})
 }
 
 #[derive(Debug, Error)]
@@ -253,10 +301,12 @@ impl NcbiTaxonomy<NoNames> {
     }
 }
 
+pub type NameClassSymbol = <StringBackend as Backend>::Symbol;
+
 pub struct AllNames {
-    pub name_classes: StringInterner<BufferBackend>,
-    pub unique_names: HashMap<TaxId, HashMap<Symbol, String>>,
-    pub names_lookup: HashMap<String, Vec<(Symbol, TaxId)>>,
+    pub name_classes: StringInterner,
+    pub unique_names: HashMap<TaxId, HashMap<NameClassSymbol, String>>,
+    pub names_lookup: HashMap<String, Vec<(NameClassSymbol, TaxId)>>,
 }
 
 impl AllNames {
@@ -306,6 +356,7 @@ impl AllNames {
     }
 }
 
+#[derive(Deserialize, Serialize)]
 pub struct SingleClassNames {
     pub name_class: String,
     pub unique_names: HashMap<TaxId, String>,
@@ -328,6 +379,7 @@ impl SingleClassNames {
     }
 }
 
+#[derive(Copy, Clone, Deserialize, Serialize)]
 pub struct NoNames {}
 
 impl NoNames {
@@ -389,7 +441,7 @@ impl NamesAssoc for AllNames {
             .push((name_class, taxid));
     }
 
-    type NameLookup = HashMap<Symbol, String>;
+    type NameLookup = HashMap<NameClassSymbol, String>;
     fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup> {
         self.unique_names.get(&taxid)
     }
@@ -399,7 +451,7 @@ impl NamesAssoc for AllNames {
         lookup.values().map(|name| name.as_str())
     }
 
-    type TaxIdsLookup = Vec<(Symbol, TaxId)>;
+    type TaxIdsLookup = Vec<(NameClassSymbol, TaxId)>;
     fn lookup_taxids<'a>(&'a self, name: &str) -> Option<&'a Self::TaxIdsLookup> {
         self.names_lookup.get(name)
     }

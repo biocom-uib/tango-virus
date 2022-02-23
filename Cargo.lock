@@ -387,6 +387,7 @@ dependencies = [
  "itertools",
  "newick-rs",
  "ordered-float",
+ "serde",
  "string-interner",
  "thiserror",
 ]
