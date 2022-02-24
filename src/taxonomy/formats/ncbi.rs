@@ -1,34 +1,25 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
-    fmt,
+    collections::HashMap,
     fs::File,
     io::{self, BufRead, BufReader},
     num::ParseIntError,
     path::Path,
 };
 
-use crate::taxonomy::NodeId;
+use crate::taxonomy::{NodeId, Taxonomy, TaxonomyMut, generic::{GenericTaxonomy, TaxonomyBuildError}};
 use newick_rs::SimpleTree;
-use serde::{Deserialize, Serialize, ser::SerializeMap, Serializer, Deserializer};
+use serde::{Deserialize, Serialize};
 use string_interner::{
     backend::{Backend, StringBackend},
-    StringInterner, Symbol,
+    StringInterner,
 };
 use thiserror::Error;
 
 pub type TaxId = NodeId;
-pub type RankSymbol = <StringBackend as Backend>::Symbol;
 
 #[derive(Deserialize, Serialize)]
 pub struct NcbiTaxonomy<Names> {
-    pub root: TaxId,
-
-    pub parent_ids: HashMap<TaxId, TaxId>,
-    children_lookup: HashMap<TaxId, Vec<TaxId>>,
-
-    #[serde(deserialize_with = "deserialize_ranks", serialize_with = "serialize_ranks")]
-    pub ranks: HashMap<TaxId, RankSymbol>,
-    pub ranks_interner: StringInterner,
+    tree: GenericTaxonomy,
 
     // old to new
     pub merged_taxids: Option<HashMap<TaxId, TaxId>>,
@@ -36,55 +27,10 @@ pub struct NcbiTaxonomy<Names> {
     pub names: Names,
 }
 
-pub fn serialize_ranks<S: Serializer>(ranks: &HashMap<TaxId, RankSymbol>, serializer: S) -> Result<S::Ok, S::Error> {
-    let mut ranks_s = serializer.serialize_map(Some(ranks.len()))?;
-
-    for (node, rank_sym) in ranks.iter() {
-        ranks_s.serialize_entry(node, &rank_sym.to_usize())?;
-    }
-
-    ranks_s.end()
-}
-
-pub fn deserialize_ranks<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<HashMap<TaxId, RankSymbol>, D::Error> {
-    use serde::de::{MapAccess, Visitor};
-
-    struct RanksVisitor {}
-
-    impl<'de> Visitor<'de> for RanksVisitor {
-        type Value = HashMap<TaxId, RankSymbol>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("ranks dictionary")
-        }
-
-        fn visit_map<M: MapAccess<'de>>(self, mut access: M) -> Result<Self::Value, M::Error> {
-            let mut res = HashMap::with_capacity(access.size_hint().unwrap_or(0));
-
-            while let Some((node, rank_sym_usize)) = access.next_entry()? {
-                let rank_sym = RankSymbol::try_from_usize(rank_sym_usize).ok_or_else(|| {
-                    <M::Error as serde::de::Error>::invalid_value(
-                        serde::de::Unexpected::Unsigned(rank_sym_usize as u64),
-                        &"a valid StringInterner symbol (as usize)",
-                    )
-                })?;
-
-                res.insert(node, rank_sym);
-            }
-
-            Ok(res)
-        }
-    }
-
-    deserializer.deserialize_map(RanksVisitor {})
-}
-
 #[derive(Debug, Error)]
 pub enum DmpError {
-    #[error("Root not found")]
-    MissingRoot,
+    #[error("Tree consistency error")]
+    TreeBuildError(#[from] TaxonomyBuildError),
 
     #[error("Error parsing taxid: {}", .0)]
     TaxIdParseError(#[from] ParseIntError),
@@ -94,9 +40,6 @@ pub enum DmpError {
 
     #[error("error reading .dmp file")]
     ReadError(#[from] io::Error),
-
-    #[error("multiple parents found for {}: {} and {}", .0, .1, .2)]
-    MultipleParents(TaxId, TaxId, TaxId),
 }
 
 macro_rules! parse_fields {
@@ -112,6 +55,10 @@ macro_rules! parse_fields {
 }
 
 impl<Names> NcbiTaxonomy<Names> {
+    pub fn node_count(&self) -> usize {
+        1 /* root */ + self.tree.parent_ids.len()
+    }
+
     pub fn with_merged_taxids(self, merged_dmp: &Path) -> Result<Self, DmpError> {
         let mut merged = HashMap::new();
 
@@ -140,121 +87,16 @@ impl<Names> NcbiTaxonomy<Names> {
 
     pub fn with_names<NewNames>(self, new_names: NewNames) -> NcbiTaxonomy<NewNames> {
         NcbiTaxonomy {
-            root: self.root,
-            parent_ids: self.parent_ids,
-            children_lookup: self.children_lookup,
-            ranks: self.ranks,
-            ranks_interner: self.ranks_interner,
+            tree: self.tree,
             merged_taxids: self.merged_taxids,
             names: new_names,
         }
-    }
-
-    pub fn node_count(&self) -> usize {
-        1 /* root */ + self.parent_ids.len()
-    }
-
-    pub fn is_leaf(&self, node: TaxId) -> bool {
-        self.children(node).is_empty()
-    }
-
-    pub fn children(&self, node: TaxId) -> &[TaxId] {
-        self.children_lookup
-            .get(&node)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-
-    pub fn parents(&self, start: TaxId) -> impl Iterator<Item = TaxId> + '_ {
-        super::super::util::ParentsIter::new_with(start, |node| {
-            if node == self.root {
-                None
-            } else {
-                self.parent_ids.get(&node).copied()
-            }
-        })
-    }
-
-    pub fn preorder_descendants(&self, start: TaxId) -> impl Iterator<Item = TaxId> + '_ {
-        super::super::util::PreOrderIter::new_with(start, |node| {
-            self.children(node).iter().copied()
-        })
-    }
-
-    pub fn postorder_descendants(&self, start: TaxId) -> impl Iterator<Item = TaxId> + '_ {
-        super::super::util::PostOrderIter::new_with(start, |node| {
-            self.children(node).iter().copied()
-        })
-    }
-
-    pub fn contract<S: AsRef<str>>(&mut self, ranks: &[S]) {
-        let mut ranks_syms = HashSet::new();
-
-        for rank in ranks {
-            if let Some(rank_sym) = self.ranks_interner.get(rank.as_ref()) {
-                ranks_syms.insert(rank_sym);
-            } else {
-                eprintln!(
-                    "NcbiTaxonomy::contract: warning: rank {:?} does not appear in the taxonomy",
-                    rank.as_ref()
-                );
-            }
-        }
-
-        let mut parent_ids = HashMap::new();
-        let mut children_lookup = HashMap::new();
-
-        let mut add_node = |parent, child| {
-            parent_ids.insert(child, parent);
-            children_lookup
-                .entry(parent)
-                .or_insert_with(|| Vec::new())
-                .push(child);
-        };
-
-        let mut stack = vec![(self.root, self.root, self.children(self.root).iter())];
-
-        while let Some(&mut (cur_parent, cur, ref mut cur_children)) = stack.last_mut() {
-            if let Some(&cur_child) = cur_children.next() {
-                let cur_grandchildren = self.children(cur);
-
-                // leaf
-                if cur_grandchildren.is_empty() {
-                    add_node(cur_parent, cur_child);
-
-                // internal
-                } else {
-                    match self.ranks.get(&cur_child) {
-                        Some(rank) if ranks_syms.contains(rank) => {
-                            add_node(cur_parent, cur_child);
-
-                            stack.push((cur_child, cur_child, cur_grandchildren.iter()));
-                        }
-                        _ => {
-                            // cur is not a valid parent
-                            stack.push((cur_parent, cur_child, cur_grandchildren.iter()));
-                        }
-                    }
-                }
-            } else {
-                stack.pop();
-            }
-        }
-
-        self.parent_ids = parent_ids;
-        self.children_lookup = children_lookup;
     }
 }
 
 impl NcbiTaxonomy<NoNames> {
     pub fn load_nodes(nodes_dmp: &Path) -> Result<Self, DmpError> {
-        let mut root = None;
-
-        let mut parent_ids = HashMap::new();
-        let mut children_lookup = HashMap::new();
-
-        let mut ranks = HashMap::new();
-        let mut ranks_interner = StringInterner::new();
+        let mut builder = GenericTaxonomy::builder();
 
         for line in BufReader::new(File::open(nodes_dmp)?).lines() {
             let line = line?;
@@ -269,37 +111,82 @@ impl NcbiTaxonomy<NoNames> {
                 let taxid = NodeId(taxid.parse()?);
                 let ptaxid = NodeId(ptaxid.parse()?);
 
-                ranks.insert(taxid, ranks_interner.get_or_intern(rank));
+                builder.set_rank(taxid, rank);
 
                 if taxid == ptaxid {
-                    root = Some(taxid);
-
+                    builder.set_root(taxid);
                 } else {
-                    match parent_ids.entry(taxid) {
-                        Entry::Vacant(vac) => {
-                            vac.insert(ptaxid);
-                        },
-                        Entry::Occupied(occ) => {
-                            return Err(DmpError::MultipleParents(taxid, ptaxid, *occ.get()));
-                        },
-                    }
-
-                    children_lookup.entry(ptaxid).or_insert_with(|| Vec::new()).push(taxid);
+                    builder.insert_edge(ptaxid, taxid)?;
                 }
             }
         }
 
+        let tree = builder.build()?;
+
         Ok(NcbiTaxonomy {
-            root: root.ok_or(DmpError::MissingRoot)?,
-            parent_ids,
-            children_lookup,
-            ranks,
-            ranks_interner,
+            tree,
             merged_taxids: None,
             names: NoNames::new(),
         })
     }
 }
+
+impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
+    fn get_root(&self) -> TaxId {
+        self.tree.get_root()
+    }
+
+    fn is_leaf(&self, node: TaxId) -> bool {
+        self.tree.is_leaf(node)
+    }
+
+    type Children<'a> = <GenericTaxonomy as Taxonomy>::Children<'a>;
+
+    fn iter_children<'a>(&'a self, node: TaxId) -> Self::Children<'a> {
+        self.tree.iter_children(node)
+    }
+
+    fn find_parent(&self, node: TaxId) -> Option<TaxId> {
+        self.tree.find_parent(node)
+    }
+
+    type RankSym = <StringBackend as Backend>::Symbol;
+
+    fn lookup_rank_sym(&self, rank: &str) -> Option<Self::RankSym> {
+        self.tree.lookup_rank_sym(rank)
+    }
+
+    fn find_rank(&self, node: TaxId) -> Option<Self::RankSym> {
+        self.tree.find_rank(node)
+    }
+
+    fn get_rank(&self, node: TaxId) -> Self::RankSym {
+        self.tree.get_rank(node)
+    }
+}
+
+impl<Names: NamesAssoc + Send + 'static> TaxonomyMut for NcbiTaxonomy<Names> {
+    type AddEdgeFn<'b> = <GenericTaxonomy as TaxonomyMut>::AddEdgeFn<'b>;
+
+    fn replace_topology_with<Body>(&mut self, body: Body)
+    where
+        Body: for<'b> FnOnce(Self::AddEdgeFn<'b>),
+    {
+        self.tree.replace_topology_with(body);
+
+        let known_taxid = |taxid| self.tree.has_node(taxid);
+
+        rayon::join(
+            || self.names.forget_taxids(&known_taxid),
+            || {
+                if let Some(merged) = &mut self.merged_taxids {
+                    merged.retain(|_old_taxid, new_taxid| known_taxid(*new_taxid));
+                }
+            },
+        );
+    }
+}
+
 
 pub type NameClassSymbol = <StringBackend as Backend>::Symbol;
 
@@ -391,6 +278,8 @@ impl NoNames {
 pub trait NamesAssoc {
     fn insert(&mut self, taxid: TaxId, name: &str, unique_name: &str, unique_name: &str);
 
+    fn forget_taxids<Keep>(&mut self, keep: Keep) where Keep: FnMut(TaxId) -> bool;
+
     type NameLookup;
     fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup>;
 
@@ -441,6 +330,15 @@ impl NamesAssoc for AllNames {
             .push((name_class, taxid));
     }
 
+    fn forget_taxids<Keep: FnMut(TaxId) -> bool>(&mut self, keep: Keep) {
+        self.unique_names.retain(|taxid, _| keep(*taxid));
+
+        self.names_lookup.retain(|_, taxids| {
+            taxids.retain(|(_, taxid)| keep(*taxid));
+            !taxids.is_empty()
+        });
+    }
+
     type NameLookup = HashMap<NameClassSymbol, String>;
     fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup> {
         self.unique_names.get(&taxid)
@@ -476,6 +374,15 @@ impl NamesAssoc for SingleClassNames {
         }
     }
 
+    fn forget_taxids<Keep>(&mut self, keep: Keep) where Keep: FnMut(TaxId) -> bool {
+        self.unique_names.retain(|taxid, _| keep(*taxid));
+
+        self.names_lookup.retain(|_, taxids| {
+            taxids.retain(|taxid| keep(*taxid));
+            !taxids.is_empty()
+        })
+    }
+
     type NameLookup = String;
     fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup> {
         self.unique_names.get(&taxid)
@@ -499,6 +406,8 @@ impl NamesAssoc for SingleClassNames {
 
 impl NamesAssoc for NoNames {
     fn insert(&mut self, _taxid: TaxId, _name: &str, _unique_name: &str, _name_class: &str) {}
+
+    fn forget_taxids<Keep>(&mut self, _keep: Keep) where Keep: FnMut(TaxId) -> bool {}
 
     type NameLookup = !;
     fn lookup_names<'a>(&'a self, _taxid: TaxId) -> Option<&'a Self::NameLookup> {
@@ -545,10 +454,16 @@ fn make_simple_tree(
     }
 }
 
+impl<Names> From<NcbiTaxonomy<Names>> for GenericTaxonomy {
+    fn from(taxonomy: NcbiTaxonomy<Names>) -> Self {
+        taxonomy.tree
+    }
+}
+
 impl From<NcbiTaxonomy<SingleClassNames>> for SimpleTree {
     fn from(taxonomy: NcbiTaxonomy<SingleClassNames>) -> Self {
-        let root = taxonomy.root;
-        let mut children_lookup = taxonomy.children_lookup;
+        let root = taxonomy.tree.root;
+        let mut children_lookup = taxonomy.tree.children_lookup;
         let mut names = taxonomy.names.unique_names;
 
         make_simple_tree(root, &mut children_lookup, &mut names)

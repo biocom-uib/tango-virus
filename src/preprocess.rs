@@ -1,10 +1,11 @@
-use std::{path::PathBuf, collections::HashMap};
+use std::{path::PathBuf, collections::HashMap, fs::File};
 
+use anyhow::anyhow;
 use clap::{ArgEnum, Args};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::taxonomy::{formats::{ncbi::{self, NcbiTaxonomy}, newick::NewickTaxonomy}, NodeId};
+use crate::taxonomy::{formats::{ncbi::{self, NcbiTaxonomy}, newick::{NewickTaxonomy, load_newick_simple_tree, self}}, NodeId};
 
 #[derive(ArgEnum, Debug, Copy, Clone)]
 pub enum TaxonomyFormat {
@@ -45,7 +46,7 @@ pub struct PreprocessArgs {
     /// Path to the input taxonomy (in the case of NCBI, specify the extracted directory of taxdump)
     input_taxonomy: String,
 
-    /// Rank names to associate to each level of the Newick taxonomy (if input-format is newick)
+    /// Rank names to associate to each level of the Newick taxonomy (if INPUT_FORMAT is newick)
     #[clap(long)]
     newick_ranks: Option<String>,
 
@@ -57,28 +58,41 @@ pub struct PreprocessArgs {
     output_taxonomy: String,
 }
 
+impl PreprocessArgs {
+    pub fn get_contraction_ranks(&self) -> Option<Vec<&str>> {
+        self.contract.map(|ranks| {
+            ranks.as_deref().unwrap_or(DEFAULT_CONTRACTION_RANKS).split(',').map(str::trim).collect()
+        })
+    }
+}
+
 fn preprocess_ncbi(args: PreprocessArgs) -> anyhow::Result<()> {
     let mut path = PathBuf::from(args.input_taxonomy);
     path.push("nodes.dmp");
 
     let mut taxo = NcbiTaxonomy::load_nodes(&path)?;
 
-    if let Some(ranks) = &args.contract {
-        let ranks = ranks.as_deref().unwrap_or(DEFAULT_CONTRACTION_RANKS).split(',').collect_vec();
-
+    if let Some(ranks) = &args.get_contraction_ranks() {
         taxo.contract(&ranks);
     }
-
-    //let preorder: HashMap<NodeId, usize> = taxo
-        //.preorder_descendants(taxo.root)
-        //.enumerate()
-        //.map(|(i, n)| (n, i))
-        //.collect();
 
     Ok(())
 }
 
 fn preprocess_newick(args: PreprocessArgs) -> anyhow::Result<()> {
+    let ranks = args
+        .newick_ranks
+        .ok_or_else(|| anyhow!("Flag --newick-ranks is required for --input-format newick"))?
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .collect_vec();
+
+    let mut taxo = NewickTaxonomy::load_newick(args.input_taxonomy.as_ref(), ranks)?;
+
+    if let Some(ranks) = &args.get_contraction_ranks() {
+        taxo.contract(ranks);
+    }
+
     Ok(())
 }
 

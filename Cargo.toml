@@ -10,8 +10,9 @@ anyhow = "1.0"
 clap = { version = "3.0", features = ["derive"] }
 csv = "1.1"
 itertools = "0.10"
-ordered-float = "2.10"
-string-interner = { version = "0.14", features = ["serde"] }
 newick-rs = "0.2"
-thiserror = "1.0"
+ordered-float = "2.10"
+rayon = "1.5"
 serde = "1.0"
+string-interner = { version = "0.14", features = ["serde"] }
+thiserror = "1.0"

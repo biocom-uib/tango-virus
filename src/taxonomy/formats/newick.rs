@@ -2,14 +2,14 @@ use std::{
     collections::HashMap,
     error::Error,
     io::{self, Read, Write},
-    string::FromUtf8Error,
+    string::FromUtf8Error, path::Path, fs::File,
 };
 
 use newick_rs::{newick, SimpleTree};
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 
-use crate::taxonomy::NodeId;
+use crate::taxonomy::{NodeId, Taxonomy};
 
 #[derive(Serialize, Deserialize)]
 pub struct NewickTaxonomy {
@@ -34,11 +34,13 @@ pub enum NewickLoadError {
     EncodingError(#[from] FromUtf8Error),
 
     #[error("Newick parse error: {}", .0)]
-    ParseError(#[source] Box<dyn Error>),
+    ParseError(#[source] Box<dyn Error + Send + Sync>),
 }
 
 impl NewickTaxonomy {
-    pub fn from_simple_tree(value: SimpleTree, rank_storage: Vec<String>) -> Self {
+    pub fn from_simple_tree(value: SimpleTree, ranks: Vec<String>) -> Self {
+        let rank_storage = ranks;
+
         let mut label_lookup = HashMap::new();
         let mut labels = Vec::new();
 
@@ -48,6 +50,7 @@ impl NewickTaxonomy {
             let node_id = NodeId(labels.len());
 
             labels.push(label.clone());
+
             label_lookup
                 .entry(label)
                 .or_insert_with(|| Vec::new())
@@ -77,12 +80,13 @@ impl NewickTaxonomy {
         let root = new_node(value.name, 0);
         let mut stack = vec![StackFrame::new(root, value.children)];
 
-        let mut parent_ids = Vec::new();
+        let mut parent_ids = vec![root];
         let mut children_lookup = Vec::new();
 
         while let (depth, Some(frame)) = (stack.len(), stack.last_mut()) {
             if let Some(child) = frame.orig_children_iter.next() {
                 let child_id = new_node(child.name, depth);
+                assert!(parent_ids.len() == child_id.0);
                 parent_ids.push(frame.node_id);
                 frame.children.push(child_id);
                 stack.push(StackFrame::new(child_id, child.children));
@@ -101,9 +105,49 @@ impl NewickTaxonomy {
             rank_storage,
         }
     }
+
+    pub fn load_newick(path: &Path, ranks: Vec<String>) -> Result<Self, NewickLoadError> {
+        let simple_tree = read_newick_simple_tree(File::open(path)?)?;
+
+        Ok(Self::from_simple_tree(simple_tree, ranks))
+    }
 }
 
-pub fn load_newick_simple_tree<R: Read>(mut reader: R) -> Result<SimpleTree, NewickLoadError> {
+impl Taxonomy for NewickTaxonomy {
+    fn get_root(&self) -> NodeId {
+        self.root
+    }
+
+    fn find_parent(&self, node: NodeId) -> Option<NodeId> {
+        if node == self.root {
+            None
+        } else {
+            self.parent_ids.get(node.0).copied()
+        }
+    }
+
+    type Children<'a> = std::iter::Copied<std::slice::Iter<'a, NodeId>>;
+
+    fn iter_children<'a>(&'a self, node: NodeId) -> Self::Children<'a> {
+        self.children_lookup[node.0].iter().copied()
+    }
+
+    type RankSym = usize;
+
+    fn lookup_rank_sym(&self, rank: &str) -> Option<Self::RankSym> {
+        self.rank_storage.iter().position(|r| r == rank)
+    }
+
+    fn find_rank(&self, node: NodeId) -> Option<Self::RankSym> {
+        self.depths.get(node.0).copied()
+    }
+
+    fn get_rank(&self, node: NodeId) -> Self::RankSym {
+        self.depths[node.0]
+    }
+}
+
+pub fn read_newick_simple_tree<R: Read>(mut reader: R) -> Result<SimpleTree, NewickLoadError> {
     let contents = io::read_to_string(&mut reader)?;
 
     let tree: SimpleTree = newick::from_newick(&contents)
@@ -112,7 +156,7 @@ pub fn load_newick_simple_tree<R: Read>(mut reader: R) -> Result<SimpleTree, New
     Ok(tree.into())
 }
 
-pub fn save_newick_simple_tree<W: Write>(
+pub fn write_newick_simple_tree<W: Write>(
     tree: &SimpleTree,
     mut writer: W,
 ) -> Result<(), io::Error> {
