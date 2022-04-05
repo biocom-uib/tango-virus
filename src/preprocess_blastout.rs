@@ -278,6 +278,7 @@ fn parse_filter(filter_str: &str) -> anyhow::Result<BlastOutFilter> {
         ">"  => lhs.gt(rhs),
         ">=" => lhs.gt_eq(rhs),
         "=" | "==" => lhs.eq(rhs),
+        "!=" => lhs.neq(rhs),
         op   => anyhow::bail!("Unknown comparison operator: {op:?}"),
     };
 
@@ -349,16 +350,6 @@ fn load_blastout(
     });
 
     let result = result.select(wanted_columns.iter().map(|name| col(name)).collect_vec());
-
-    //for (col, field) in result.get_columns_mut().iter_mut().zip(schema.iter_fields()) {
-    //    col.rename(field.name());
-
-    //    if wanted_columns.iter().any(|c| c == col.name()) {
-    //        *col = col.cast(field.data_type())?;
-    //    }
-    //}
-
-    //let result = result.select(wanted_columns)?;
 
     Ok(result)
 }

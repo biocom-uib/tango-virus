@@ -235,27 +235,24 @@ where
             record[1].split(';').collect()
         };
 
-        let subject_node_ids: HashSet<NodeId> = subject_ids.iter()
-            .filter_map(|&name| {
-                let taxids = read_to_taxids(name);
+        let subject_node_ids = subject_ids.iter().filter_map(|&name| {
+            let taxids = read_to_taxids(name);
 
-                match taxids.len() {
-                    0 => {
-                        eprintln!("\nWarning: No taxid matching {name:?} found in the taxonomy, skipping");
-                        None
-                    },
-                    1 => {
-                        Some(taxids[0])
-                    },
-                    _ => {
-                        eprintln!("\nWarning: Multiple taxids matched {name:?} in the taxonomy, returning the latest one");
-                        taxids.iter().max().copied()
-                    },
-                }
-            })
-            .collect();
-
-        if subject_node_ids.len() < 2 { return Ok(()); }
+            match taxids.len() {
+                0 => {
+                    eprintln!("\nWarning: No taxid matching {name:?} found in the taxonomy, skipping");
+                    None
+                },
+                1 => {
+                    Some(taxids[0])
+                },
+                _ => {
+                    eprintln!("\nWarning: Multiple taxids matched {name:?} in the taxonomy, returning the latest one");
+                    taxids.iter().max().copied()
+                },
+            }
+        })
+        .collect();
 
         let (lca_id, mut ann_map) = annotate_match_count(tax, &subject_node_ids)?;
 

@@ -1,8 +1,7 @@
-use core::fmt;
 use std::{collections::{HashMap, hash_map::{Entry, self}}, mem, sync::Mutex};
 
 use itertools::Itertools;
-use serde::{Deserialize, Serialize, Deserializer, Serializer, ser::SerializeMap};
+use serde::{Deserialize, Serialize};
 use string_interner::{backend::{StringBackend, Backend}, StringInterner, Symbol};
 use thiserror::Error;
 
@@ -184,50 +183,6 @@ impl TaxonomyMut for GenericTaxonomy {
     }
 }
 
-pub fn serialize_ranks<S: Serializer>(ranks: &HashMap<NodeId, RankSymbol>, serializer: S) -> Result<S::Ok, S::Error> {
-    let mut ranks_s = serializer.serialize_map(Some(ranks.len()))?;
-
-    for (node, rank_sym) in ranks.iter() {
-        ranks_s.serialize_entry(node, &rank_sym.to_usize())?;
-    }
-
-    ranks_s.end()
-}
-
-pub fn deserialize_ranks<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<HashMap<NodeId, RankSymbol>, D::Error> {
-    use serde::de::{MapAccess, Visitor};
-
-    struct RanksVisitor {}
-
-    impl<'de> Visitor<'de> for RanksVisitor {
-        type Value = HashMap<NodeId, RankSymbol>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("ranks dictionary")
-        }
-
-        fn visit_map<M: MapAccess<'de>>(self, mut access: M) -> Result<Self::Value, M::Error> {
-            let mut res = HashMap::with_capacity(access.size_hint().unwrap_or(0));
-
-            while let Some((node, rank_sym_usize)) = access.next_entry()? {
-                let rank_sym = RankSymbol::try_from_usize(rank_sym_usize).ok_or_else(|| {
-                    <M::Error as serde::de::Error>::invalid_value(
-                        serde::de::Unexpected::Unsigned(rank_sym_usize as u64),
-                        &"a valid StringInterner symbol (as usize)",
-                    )
-                })?;
-
-                res.insert(node, rank_sym);
-            }
-
-            Ok(res)
-        }
-    }
-
-    deserializer.deserialize_map(RanksVisitor {})
-}
 
 #[derive(Default)]
 pub struct GenericTaxonomyBuilder {

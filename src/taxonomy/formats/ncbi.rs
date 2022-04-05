@@ -65,7 +65,6 @@ impl<Names> NcbiTaxonomy<Names> {
 
         for line in BufReader::new(File::open(merged_dmp)?).lines() {
             let line = line?;
-            let line = line.strip_suffix("\t|").unwrap_or(&line);
 
             parse_fields! {
                 &line => {
