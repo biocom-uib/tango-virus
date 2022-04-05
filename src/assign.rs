@@ -396,29 +396,19 @@ where
     let mut count = 0;
 
     for record in records {
-        for assigned_node in record.assigned_nodes {
-            let query_id = record.query_id.clone();
+        for node in record.assigned_nodes {
+            let assigned_name = tax.labels_of(node).exactly_one().unwrap_or_else(|mut err| {
+                if let Some(label) = err.next() {
+                    eprintln!("\nWarning: Found more than one label for taxid {node}");
+                    label
+                } else {
+                    eprintln!("\nWarning: No label found for taxid {node}");
+                    ""
+                }
+            });
 
-            let assigned_taxid = assigned_node.0;
-
-            let assigned_name = tax
-                .labels_of(assigned_node)
-                .filter(|s| !s.is_empty())
-                .exactly_one()
-                .unwrap_or_else(|mut err| {
-                    if let Some(label) = err.next() {
-                        eprintln!("\nWarning: Found more than one label for taxid {assigned_node}");
-                        label
-                    } else {
-                        eprintln!("\nWarning: No label found for taxid {assigned_node}");
-                        ""
-                    }
-                });
-
-            let assigned_name = assigned_name.to_owned();
-
-            let assigned_rank = tax
-                .find_rank(assigned_node)
+            let rank = tax
+                .find_rank(node)
                 .and_then(|rank_sym| tax.rank_sym_str(rank_sym))
                 .unwrap_or("")
                 .to_owned();
@@ -426,10 +416,10 @@ where
             let penalty = record.penalty;
 
             csv_writer.serialize(AssignmentRecord {
-                query_id,
-                assigned_taxid,
-                assigned_name,
-                assigned_rank,
+                query_id: record.query_id.clone(),
+                assigned_taxid: node.0,
+                assigned_name: assigned_name.to_owned(),
+                assigned_rank: rank,
                 penalty,
             })?;
         }

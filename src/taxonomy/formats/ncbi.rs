@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, hash_map},
+    collections::HashMap,
     fs::File,
     io::{self, BufRead, BufReader},
     num::ParseIntError,
@@ -270,23 +270,37 @@ impl From<NameClassSymbol> for SymbolU32 {
 #[derive(Default, Serialize, Deserialize)]
 pub struct AllNames {
     pub name_classes: StringInterner,
-    pub unique_names: HashMap<TaxId, HashMap<NameClassSymbol, String>>,
-    pub names_lookup: HashMap<String, Vec<(NameClassSymbol, TaxId)>>,
+    pub taxid_to_names: HashMap<TaxId, Vec<(NameClassSymbol, String)>>,
+    pub name_to_taxids: HashMap<String, Vec<(NameClassSymbol, TaxId)>>,
 }
 
 impl AllNames {
-    pub fn load_filtered_names_dmp<Pred, P>(class_filter: Pred, names_dmp: P) -> Result<Self, DmpError>
+    pub fn load_filtered_names_dmp<S, P>(classes: &[S], names_dmp: P) -> Result<Self, DmpError>
     where
-        Pred: Fn(&str) -> bool,
+        S: AsRef<str>,
         P: AsRef<Path>,
     {
         let mut this = AllNames {
             name_classes: StringInterner::new(),
-            unique_names: HashMap::new(),
-            names_lookup: HashMap::new(),
+            taxid_to_names: HashMap::new(),
+            name_to_taxids: HashMap::new(),
         };
 
-        this.fill_from(class_filter, names_dmp)?;
+        this.fill_from(names_dmp, |class| classes.iter().any(|c| c.as_ref() == class))?;
+
+        let order: HashMap<NameClassSymbol, usize>  = classes.into_iter()
+            .enumerate()
+            .map(|(i, s)| (this.name_classes.get_or_intern(s.as_ref()).into(), i))
+            .collect();
+
+        for names in this.taxid_to_names.values_mut() {
+            names.sort_by_key(|(class, _)| order.get(class).copied().unwrap_or(classes.len()));
+        }
+
+        for taxids in this.name_to_taxids.values_mut() {
+            taxids.sort_by_key(|(class, _)| order.get(class).copied().unwrap_or(classes.len()));
+        }
+
         Ok(this)
     }
 
@@ -297,14 +311,21 @@ impl AllNames {
            return Err(self)
         };
 
-        let unique_names = self
-            .unique_names
+        let taxid_to_name = self
+            .taxid_to_names
             .into_iter()
-            .filter_map(|(taxid, mut names)| Some((taxid, names.remove(&single_class)?)))
+            .filter_map(|(taxid, names)| {
+                let single_name = names.into_iter()
+                    .filter(|(class, _)| *class == single_class)
+                    .map(|(_, name)| name)
+                    .next()?;
+
+                Some((taxid, single_name))
+            })
             .collect();
 
-        let names_lookup = self
-            .names_lookup
+        let name_to_taxids = self
+            .name_to_taxids
             .into_iter()
             .filter_map(|(name, taxids)| {
                 let new_taxids: Vec<TaxId> = taxids
@@ -323,8 +344,8 @@ impl AllNames {
 
         Ok(SingleClassNames {
             name_class: name_class.to_owned(),
-            names: unique_names,
-            names_lookup,
+            taxid_to_name,
+            name_to_taxids,
         })
     }
 }
@@ -332,8 +353,8 @@ impl AllNames {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SingleClassNames {
     pub name_class: String,
-    pub names: HashMap<TaxId, String>,
-    pub names_lookup: HashMap<String, Vec<TaxId>>,
+    pub taxid_to_name: HashMap<TaxId, String>,
+    pub name_to_taxids: HashMap<String, Vec<TaxId>>,
 }
 
 impl SingleClassNames {
@@ -343,11 +364,11 @@ impl SingleClassNames {
     ) -> Result<Self, DmpError> {
         let mut this = SingleClassNames {
             name_class,
-            names: HashMap::new(),
-            names_lookup: HashMap::new(),
+            taxid_to_name: HashMap::new(),
+            name_to_taxids: HashMap::new(),
         };
 
-        this.fill_from(|_| true, names_dmp)?;
+        this.fill_from(names_dmp, |_| true)?;
         Ok(this)
     }
 }
@@ -378,10 +399,10 @@ pub trait NamesAssoc {
     type TaxIdsLookupIter<'a>: Iterator<Item = TaxId> + 'a;
     fn iter_lookup_taxids<'a>(lookup: &'a Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'a>;
 
-    fn fill_from<F, P>(&mut self, class_filter: F, names_dmp: P) -> Result<(), DmpError>
+    fn fill_from<P, F>(&mut self, names_dmp: P, class_filter: F) -> Result<(), DmpError>
     where
-        F: Fn(&str) -> bool,
         P: AsRef<Path>,
+        F: Fn(&str) -> bool,
     {
         for line in BufReader::new(File::open(names_dmp)?).lines() {
             let line = line?;
@@ -397,7 +418,7 @@ pub trait NamesAssoc {
                 let taxid = NodeId(taxid.parse()?);
 
                 if class_filter(name_class) {
-                   self.insert(taxid, name, unique_name, name_class);
+                    self.insert(taxid, name, unique_name, name_class);
                 }
             }
         }
@@ -408,42 +429,49 @@ pub trait NamesAssoc {
 
 impl NamesAssoc for AllNames {
     fn insert(&mut self, taxid: TaxId, name: &str, unique_name: &str, name_class: &str) {
+        let chosen_name = if !name.is_empty() {
+            name
+        } else if !unique_name.is_empty() {
+            unique_name
+        } else {
+            return
+        };
+
         let name_class = self.name_classes.get_or_intern(name_class).into();
 
-        self.unique_names
+        self.taxid_to_names
             .entry(taxid)
             .or_default()
-            .entry(name_class)
-            .or_insert_with(|| unique_name.to_owned());
+            .push((name_class, chosen_name.to_owned()));
 
-        self.names_lookup
-            .entry(name.to_owned())
+        self.name_to_taxids
+            .entry(chosen_name.to_owned())
             .or_default()
             .push((name_class, taxid));
     }
 
     fn forget_taxids<Keep: FnMut(TaxId) -> bool>(&mut self, mut keep: Keep) {
-        self.unique_names.retain(|taxid, _| keep(*taxid));
+        self.taxid_to_names.retain(|taxid, _| keep(*taxid));
 
-        self.names_lookup.retain(|_, taxids| {
+        self.name_to_taxids.retain(|_, taxids| {
             taxids.retain(|(_, taxid)| keep(*taxid));
             !taxids.is_empty()
         });
     }
 
-    type NameLookup = HashMap<NameClassSymbol, String>;
+    type NameLookup = Vec<(NameClassSymbol, String)>;
     fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup> {
-        self.unique_names.get(&taxid)
+        self.taxid_to_names.get(&taxid)
     }
 
-    type NamesLookupIter<'a> = IterAsStr<hash_map::Values<'a, NameClassSymbol, String>>;
+    type NamesLookupIter<'a> = IterStrSnd<slice::Iter<'a, (NameClassSymbol, String)>>;
     fn iter_lookup_names<'a>(lookup: &'a Self::NameLookup) -> Self::NamesLookupIter<'a> {
-        IterAsStr(lookup.values())
+        IterStrSnd(lookup.iter())
     }
 
     type TaxIdsLookup = Vec<(NameClassSymbol, TaxId)>;
     fn lookup_taxids<'a>(&'a self, name: &str) -> Option<&'a Self::TaxIdsLookup> {
-        self.names_lookup.get(name)
+        self.name_to_taxids.get(name)
     }
 
     type TaxIdsLookupIter<'a> = IterCopySnd<slice::Iter<'a, (NameClassSymbol, NodeId)>>;
@@ -452,13 +480,13 @@ impl NamesAssoc for AllNames {
     }
 }
 
-pub struct IterAsStr<I>(I);
+pub struct IterStrSnd<I>(I);
 
-impl<'a, I: Iterator<Item = &'a String>> Iterator for IterAsStr<I> {
+impl<'a, T: 'a, I: Iterator<Item = &'a (T, String)>> Iterator for IterStrSnd<I> {
     type Item = &'a str;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|s| &**s)
+        self.0.next().map(|s| &*s.1)
     }
 }
 
@@ -475,11 +503,11 @@ impl<'a, T: 'a, U: 'a + Copy, I: Iterator<Item = &'a (T, U)>> Iterator for IterC
 impl NamesAssoc for SingleClassNames {
     fn insert(&mut self, taxid: TaxId, name: &str, unique_name: &str, name_class: &str) {
         if name_class == self.name_class {
-            self.names
+            self.taxid_to_name
                 .entry(taxid)
                 .or_insert_with(|| if unique_name.is_empty() { name } else { unique_name }.to_owned());
 
-            self.names_lookup
+            self.name_to_taxids
                 .entry(name.to_owned())
                 .or_default()
                 .push(taxid);
@@ -487,9 +515,9 @@ impl NamesAssoc for SingleClassNames {
     }
 
     fn forget_taxids<Keep>(&mut self, mut keep: Keep) where Keep: FnMut(TaxId) -> bool {
-        self.names.retain(|taxid, _| keep(*taxid));
+        self.taxid_to_name.retain(|taxid, _| keep(*taxid));
 
-        self.names_lookup.retain(|_, taxids| {
+        self.name_to_taxids.retain(|_, taxids| {
             taxids.retain(|taxid| keep(*taxid));
             !taxids.is_empty()
         })
@@ -497,7 +525,7 @@ impl NamesAssoc for SingleClassNames {
 
     type NameLookup = String;
     fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup> {
-        self.names.get(&taxid)
+        self.taxid_to_name.get(&taxid)
     }
 
     type NamesLookupIter<'a> = std::iter::Once<&'a str>;
@@ -507,7 +535,7 @@ impl NamesAssoc for SingleClassNames {
 
     type TaxIdsLookup = Vec<TaxId>;
     fn lookup_taxids<'a>(&'a self, name: &str) -> Option<&'a Self::TaxIdsLookup> {
-        self.names_lookup.get(name)
+        self.name_to_taxids.get(name)
     }
 
     type TaxIdsLookupIter<'a> = std::iter::Cloned<std::slice::Iter<'a, TaxId>>;
@@ -541,7 +569,7 @@ impl NamesAssoc for NoNames {
         std::iter::empty()
     }
 
-    fn fill_from<F, P>(&mut self, _class_filter: F, _names_dmp: P) -> Result<(), DmpError>
+    fn fill_from<P, F>(&mut self, _names_dmp: P, _class_filter: F) -> Result<(), DmpError>
     where
         F: Fn(&str) -> bool,
         P: AsRef<Path>,
@@ -580,7 +608,7 @@ impl From<NcbiTaxonomy<SingleClassNames>> for SimpleTree {
     fn from(taxonomy: NcbiTaxonomy<SingleClassNames>) -> Self {
         let root = taxonomy.tree.root;
         let mut children_lookup = taxonomy.tree.children_lookup;
-        let mut names = taxonomy.names.names;
+        let mut names = taxonomy.names.taxid_to_name;
 
         make_simple_tree(root, &mut children_lookup, &mut names)
     }

@@ -126,12 +126,7 @@ fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedT
         eprintln!("Loaded merged.dmp");
 
         path.push("names.dmp");
-
-        let names = AllNames::load_filtered_names_dmp(
-            |name_class| name_classes.contains(&name_class),
-            &path,
-        )?;
-
+        let names = AllNames::load_filtered_names_dmp(&name_classes, &path)?;
         path.pop();
         eprintln!("Loaded names.dmp with classes {name_classes:?}");
 
