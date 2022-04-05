@@ -63,7 +63,7 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
     rank: &str,
     include_descendants: bool,
     assignments_path: P,
-) -> Result<(Tax::RankSym, HashSet<NodeId>)> {
+) -> Result<(Tax::RankSym, (usize, usize), HashSet<NodeId>)> {
     let rank_sym = tax
         .lookup_rank_sym(rank)
         .ok_or_else(|| anyhow::anyhow!("Rank not found in taxonomy: {rank}"))?;
@@ -74,6 +74,9 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
         .from_path(assignments_path)?;
 
     let mut present = HashSet::new();
+
+    let mut num_dropped = 0;
+    let mut total_records = 0;
 
     for record in csv_reader.into_deserialize() {
         let record: AssignmentRecord = record?;
@@ -96,6 +99,8 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
                 present.extend(valid_descendants);
 
             } else {
+                num_dropped += 1;
+
                 eprintln!(
                     "Warning: No valid descendants found for {:?} (taxid:{}) (rank: {})",
                     record.assigned_name,
@@ -104,6 +109,8 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
                 );
             }
         } else {
+            num_dropped += 1;
+
             eprintln!(
                 "Warning: No valid ancestors found for {:?} (taxid:{}) (rank: {})",
                 record.assigned_name,
@@ -111,9 +118,11 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
                 tax.rank_sym_str(tax.get_rank(node)).unwrap_or(""),
             );
         }
+
+        total_records += 1;
     }
 
-    Ok((rank_sym, present))
+    Ok((rank_sym, (num_dropped, total_records), present))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -183,8 +192,10 @@ fn load_assignment_and_refine_vpf_class<'a, P1: AsRef<Path>, P2: 'a + AsRef<Path
     vpf_class_prediciton_path: P2,
 ) -> Result<impl Iterator<Item = csv::Result<VpfClassRecord>> + 'a> {
 
-    let (rank_sym, present) = load_assignment_found_taxids(tax, rank, include_descendants, assignments_path)
+    let (rank_sym, (dropped, total), present) = load_assignment_found_taxids(tax, rank, include_descendants, assignments_path)
         .context("Error collecting metagenomic assignment taxids")?;
+
+    eprintln!("Loaded assignments (dropped {} records out of {})", dropped, total);
 
     open_and_refine_vpf_class(tax, rank_sym, present, allow_different_ranks, vpf_class_prediciton_path)
         .context("Error reading VPF-Class output")
