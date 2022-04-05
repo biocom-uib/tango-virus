@@ -65,7 +65,7 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
 ) -> Result<(Tax::RankSym, HashSet<NodeId>)> {
     let rank_sym = tax
         .lookup_rank_sym(rank)
-        .ok_or_else(|| anyhow::anyhow!("Given rank not found in taxonomy"))?;
+        .ok_or_else(|| anyhow::anyhow!("Rank not found in taxonomy: {rank}"))?;
 
     let csv_reader = csv::ReaderBuilder::new()
         .has_headers(true)
@@ -84,6 +84,7 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
 
         if let Some(valid_ancestor) = valid_ancestor {
             present.insert(valid_ancestor);
+
         } else if include_descendants {
             let mut valid_descendants = tax
                 .postorder_descendants(node)
@@ -92,16 +93,21 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
 
             if valid_descendants.peek().is_some() {
                 present.extend(valid_descendants);
+
             } else {
                 eprintln!(
-                    "Warning: No valid descendants found for {:?} (taxid:{})",
-                    record.assigned_name, node
+                    "Warning: No valid descendants found for {:?} (taxid:{}) (rank: {})",
+                    record.assigned_name,
+                    node,
+                    tax.rank_sym_str(tax.get_rank(node)).unwrap_or("")
                 );
             }
         } else {
             eprintln!(
-                "Warning: No valid ancestors found for {:?} (taxid:{})",
-                record.assigned_name, node
+                "Warning: No valid ancestors found for {:?} (taxid:{}) (rank: {})",
+                record.assigned_name,
+                node,
+                tax.rank_sym_str(tax.get_rank(node)).unwrap_or(""),
             );
         }
     }
