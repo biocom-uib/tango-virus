@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io;
 
 use clap::Args;
 use crossbeam::channel::Sender;
@@ -8,6 +8,7 @@ use csv::{StringRecord, WriterBuilder};
 use extended_rational::Rational;
 use itertools::Itertools;
 use rayon::iter::{ParallelBridge, ParallelIterator};
+use serde::{Serialize, Deserialize};
 
 use crate::preprocess_blastout;
 use crate::preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy};
@@ -194,7 +195,7 @@ where
     }
 }
 
-struct AssignmentsRecord {
+struct QueryAssignments {
     query_id: String,
     assigned_nodes: Vec<NodeId>,
     penalty: f32,
@@ -206,7 +207,7 @@ fn produce_assignments<R, Tax, F>(
     tax: &Tax,
     read_to_taxids: F,
     q: Rational,
-    sender: Sender<AssignmentsRecord>,
+    sender: Sender<QueryAssignments>,
 ) -> anyhow::Result<()>
 where
     R: io::Read + Send,
@@ -260,10 +261,10 @@ where
         annotate_precision_recall(&mut ann_map, lca_id);
         let (assigned_nodes, penalty) = assign_reads(&ann_map, q);
 
-        sender.send(AssignmentsRecord {
+        sender.send(QueryAssignments {
             query_id: query_id.to_owned(),
-            assigned_nodes: assigned_nodes,
-            penalty: f32::from(penalty)
+            assigned_nodes,
+            penalty: f32::from(penalty),
         })?;
 
         anyhow::Ok(())
@@ -274,12 +275,12 @@ fn load_reads_and_produce_assignments(
     reads_path: &str,
     taxonomy: &PreprocessedTaxonomy,
     q: Rational,
-    sender: Sender<AssignmentsRecord>,
+    sender: Sender<QueryAssignments>,
 ) -> anyhow::Result<()> {
     let mut csv_reader = csv::ReaderBuilder::new()
         .has_headers(false)
         .delimiter(b'\t')
-        .from_reader(BufReader::new(File::open(reads_path)?));
+        .from_path(reads_path)?;
 
     let header = peek_reads_csv_header(&mut csv_reader)?;
 
@@ -331,11 +332,20 @@ fn load_reads_and_produce_assignments(
     Ok(())
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct AssignmentRecord {
+    pub query_id: String,
+    pub assigned_taxid: usize,
+    pub assigned_name: String,
+    pub assigned_rank: String,
+    pub penalty: f32,
+}
+
 fn write_assignments<W, Tax, I>(writer: W, tax: &Tax, records: I) -> anyhow::Result<()>
 where
     W: io::Write,
     Tax: LabelledTaxonomy,
-    I: IntoIterator<Item = AssignmentsRecord>
+    I: IntoIterator<Item = QueryAssignments>,
 {
     let mut csv_writer = WriterBuilder::new()
         .delimiter(b'\t')
@@ -346,33 +356,46 @@ where
 
     let mut count = 0;
 
-    for AssignmentsRecord { query_id, assigned_nodes, penalty } in records {
-        let penalty = &*penalty.to_string();
+    for record in records {
+        for assigned_node in record.assigned_nodes {
+            let query_id = record.query_id.clone();
 
-        for assigned_node in assigned_nodes {
-            let rank = tax.find_rank(assigned_node)
-                .and_then(|rank_sym| tax.rank_sym_str(rank_sym))
-                .unwrap_or("");
+            let assigned_taxid = assigned_node.0;
 
-            match tax.labels_of(assigned_node).exactly_one() {
+            let assigned_name = match tax.labels_of(assigned_node).exactly_one() {
                 Ok(label) => {
-                    if !label.is_empty() {
-                        csv_writer.write_record([&query_id, label, rank, penalty])?;
-                    } else {
-                        eprintln!("Warning: Empty label found for taxid {assigned_node}, writing taxid:{assigned_node} instead");
-                        csv_writer.write_record([&query_id, &*format!("taxid:{assigned_node}"), rank, penalty])?;
+                    if label.is_empty() {
+                        eprintln!("Warning: Empty label found for taxid {assigned_node}");
                     }
-                },
+                    label
+                }
                 Err(mut err) => {
                     if let Some(label) = err.next() {
                         eprintln!("Warning: Found more than one label for taxid {assigned_node}");
-                        csv_writer.write_record([&query_id, label, rank, penalty])?;
+                        label
                     } else {
-                        eprintln!("Warning: No label found for taxid {assigned_node}, writing taxid:{assigned_node} instead");
-                        csv_writer.write_record([&query_id, &*format!("taxid:{assigned_node}"), rank, penalty])?;
+                        eprintln!("Warning: No label found for taxid {assigned_node}");
+                        ""
                     }
-                },
-            }
+                }
+            };
+            let assigned_name = assigned_name.to_owned();
+
+            let assigned_rank = tax
+                .find_rank(assigned_node)
+                .and_then(|rank_sym| tax.rank_sym_str(rank_sym))
+                .unwrap_or("")
+                .to_owned();
+
+            let penalty = record.penalty;
+
+            csv_writer.serialize(AssignmentRecord {
+                query_id,
+                assigned_taxid,
+                assigned_name,
+                assigned_rank,
+                penalty,
+            })?;
         }
 
         count += 1;
@@ -382,9 +405,13 @@ where
     Ok(())
 }
 
-fn open_output_and_write_assignments<I>(output: &str, taxonomy: &PreprocessedTaxonomy, records: I) -> anyhow::Result<()>
+fn open_output_and_write_assignments<I>(
+    output: &str,
+    taxonomy: &PreprocessedTaxonomy,
+    records: I,
+) -> anyhow::Result<()>
 where
-    I: IntoIterator<Item = AssignmentsRecord>,
+    I: IntoIterator<Item = QueryAssignments>,
 {
     match &taxonomy.tree {
         SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax) => {
@@ -393,14 +420,14 @@ where
             } else {
                 write_assignments(File::create(output)?, tax, records)?;
             };
-        },
+        }
         SomeTaxonomy::NewickTaxonomy(tax) => {
             if output == "-" {
                 write_assignments(io::stdout(), tax, records)?;
             } else {
                 write_assignments(File::create(output)?, tax, records)?;
             };
-        },
+        }
     }
 
     Ok(())

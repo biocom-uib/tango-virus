@@ -11,15 +11,18 @@
 use clap::{Parser, Subcommand};
 
 pub mod taxonomy;
+
 mod preprocess_blastout;
 mod preprocess_taxonomy;
 mod assign;
+mod refine_vpf_class;
 
 #[derive(Subcommand)]
 enum Commands {
     PreprocessTaxonomy(preprocess_taxonomy::PreprocessTaxonomyArgs),
     PreprocessBlastout(preprocess_blastout::PreprocessBlastOutArgs),
     Assign(assign::AssignArgs),
+    RefineVpfClass(refine_vpf_class::RefineVpfClassArgs),
 }
 
 /// Rust port of TANGO: Taxonomic Assignment in Metagenomics
@@ -41,6 +44,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Assign(args) => {
             assign::assign(args)?;
+        }
+        Commands::RefineVpfClass(args) => {
+            refine_vpf_class::refine_vpf_class(args)?;
         }
     }
 
