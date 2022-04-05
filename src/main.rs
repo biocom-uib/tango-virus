@@ -6,8 +6,6 @@
     iterator_try_reduce,
     label_break_value,
     never_type,
-    stdio_locked,
-    type_alias_impl_trait
 )]
 
 use clap::{Parser, Subcommand};
