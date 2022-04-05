@@ -397,14 +397,9 @@ where
 
     for record in records {
         for node in record.assigned_nodes {
-            let assigned_name = tax.labels_of(node).exactly_one().unwrap_or_else(|mut err| {
-                if let Some(label) = err.next() {
-                    eprintln!("\nWarning: Found more than one label for taxid {node}");
-                    label
-                } else {
-                    eprintln!("\nWarning: No label found for taxid {node}");
-                    ""
-                }
+            let assigned_name = tax.labels_of(node).next().unwrap_or_else(|| {
+                eprintln!("\nWarning: No label found for taxid {node}");
+                ""
             });
 
             let rank = tax
