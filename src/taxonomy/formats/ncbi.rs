@@ -1,12 +1,13 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map},
     fs::File,
     io::{self, BufRead, BufReader},
     num::ParseIntError,
-    path::Path,
+    path::Path, slice,
 };
 
-use crate::taxonomy::{NodeId, Taxonomy, TaxonomyMut, generic::{GenericTaxonomy, TaxonomyBuildError}};
+use crate::taxonomy::{NodeId, Taxonomy, TaxonomyMut, generic::{GenericTaxonomy, TaxonomyBuildError}, TopologyReplacer, LabelledTaxonomy};
+use itertools::Either;
 use newick_rs::SimpleTree;
 use serde::{Deserialize, Serialize};
 use string_interner::{
@@ -19,7 +20,7 @@ pub type TaxId = NodeId;
 
 #[derive(Deserialize, Serialize)]
 pub struct NcbiTaxonomy<Names> {
-    tree: GenericTaxonomy,
+    pub tree: GenericTaxonomy,
 
     // old to new
     pub merged_taxids: Option<HashMap<TaxId, TaxId>>,
@@ -44,7 +45,7 @@ pub enum DmpError {
 
 macro_rules! parse_fields {
     ($line:expr => { $(let $fields:pat = next as $field_names:expr;)+ }; $($body:tt)+) => {{
-        let mut line_iter = $line.split("\t|\t");
+        let mut line_iter = $line.strip_suffix("\t|").unwrap_or($line).split("\t|\t");
 
         $(
             let $fields = line_iter.next().ok_or(DmpError::MissingField($field_names))?;
@@ -85,17 +86,21 @@ impl<Names> NcbiTaxonomy<Names> {
         })
     }
 
+    pub fn has_node(&self, node: NodeId) -> bool {
+        self.tree.has_node(node)
+    }
+
     pub fn with_names<NewNames>(self, new_names: NewNames) -> NcbiTaxonomy<NewNames> {
         NcbiTaxonomy {
             tree: self.tree,
             merged_taxids: self.merged_taxids,
             names: new_names,
         }
-    }
+   }
 }
 
 impl NcbiTaxonomy<NoNames> {
-    pub fn load_nodes(nodes_dmp: &Path) -> Result<Self, DmpError> {
+    pub fn load_nodes<P: AsRef<Path>>(nodes_dmp: P) -> Result<Self, DmpError> {
         let mut builder = GenericTaxonomy::builder();
 
         for line in BufReader::new(File::open(nodes_dmp)?).lines() {
@@ -114,7 +119,7 @@ impl NcbiTaxonomy<NoNames> {
                 builder.set_rank(taxid, rank);
 
                 if taxid == ptaxid {
-                    builder.set_root(taxid);
+                    builder.set_root(taxid)?;
                 } else {
                     builder.insert_edge(ptaxid, taxid)?;
                 }
@@ -140,6 +145,10 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
         self.tree.is_leaf(node)
     }
 
+    fn has_uniform_depths(&self) -> Option<usize> {
+        self.tree.has_uniform_depths()
+    }
+
     type Children<'a> = <GenericTaxonomy as Taxonomy>::Children<'a>;
 
     fn iter_children<'a>(&'a self, node: TaxId) -> Self::Children<'a> {
@@ -152,6 +161,10 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
 
     type RankSym = <StringBackend as Backend>::Symbol;
 
+    fn rank_sym_str(&self, rank_sym: Self::RankSym) -> Option<&str> {
+        self.tree.rank_sym_str(rank_sym)
+    }
+
     fn lookup_rank_sym(&self, rank: &str) -> Option<Self::RankSym> {
         self.tree.lookup_rank_sym(rank)
     }
@@ -163,16 +176,50 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
     fn get_rank(&self, node: TaxId) -> Self::RankSym {
         self.tree.get_rank(node)
     }
+
+    type NodeRanks<'a> = <GenericTaxonomy as Taxonomy>::NodeRanks<'a>;
+
+    fn node_ranks<'a>(&'a self) -> Self::NodeRanks<'a> {
+        self.tree.node_ranks()
+    }
+}
+
+impl<Names: NamesAssoc + Send + 'static> LabelledTaxonomy for NcbiTaxonomy<Names> {
+    type Labels<'a> = Either<
+        std::iter::Empty<&'a str>,
+        Names::NamesLookupIter<'a>
+    >;
+
+    fn labels_of<'a>(&'a self, node: NodeId) -> Self::Labels<'a> {
+        if let Some(result) = self.names.lookup_names(node) {
+            Either::Right(Names::iter_lookup_names(result))
+        } else {
+            Either::Left(std::iter::empty())
+        }
+    }
+
+    type NodesWithLabel<'a> = Either<
+        std::iter::Empty<NodeId>,
+        Names::TaxIdsLookupIter<'a>
+    >;
+
+    fn nodes_with_label<'a>(&'a self, label: &'a str) -> Self::NodesWithLabel<'a> {
+        if let Some(result) = self.names.lookup_taxids(label) {
+            Either::Right(Names::iter_lookup_taxids(result))
+        } else {
+            Either::Left(std::iter::empty())
+        }
+    }
 }
 
 impl<Names: NamesAssoc + Send + 'static> TaxonomyMut for NcbiTaxonomy<Names> {
-    type AddEdgeFn<'b> = <GenericTaxonomy as TaxonomyMut>::AddEdgeFn<'b>;
+    type UnderlyingTopology = <GenericTaxonomy as TaxonomyMut>::UnderlyingTopology;
 
-    fn replace_topology_with<Body>(&mut self, body: Body)
+    fn replace_topology_with<'a, Replacer>(&'a mut self, replacer: Replacer)
     where
-        Body: for<'b> FnOnce(Self::AddEdgeFn<'b>),
+        Replacer: TopologyReplacer<Self::UnderlyingTopology>
     {
-        self.tree.replace_topology_with(body);
+        self.tree.replace_topology_with(replacer);
 
         let known_taxid = |taxid| self.tree.has_node(taxid);
 
@@ -237,16 +284,16 @@ impl AllNames {
 
         Some(SingleClassNames {
             name_class: name_class.to_owned(),
-            unique_names,
+            names: unique_names,
             names_lookup,
         })
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SingleClassNames {
     pub name_class: String,
-    pub unique_names: HashMap<TaxId, String>,
+    pub names: HashMap<TaxId, String>,
     pub names_lookup: HashMap<String, Vec<TaxId>>,
 }
 
@@ -257,7 +304,7 @@ impl SingleClassNames {
     ) -> Result<Self, DmpError> {
         let mut this = SingleClassNames {
             name_class,
-            unique_names: HashMap::new(),
+            names: HashMap::new(),
             names_lookup: HashMap::new(),
         };
 
@@ -276,20 +323,20 @@ impl NoNames {
 }
 
 pub trait NamesAssoc {
-    fn insert(&mut self, taxid: TaxId, name: &str, unique_name: &str, unique_name: &str);
+    fn insert(&mut self, taxid: TaxId, name: &str, unique_name: &str, name_class: &str);
 
     fn forget_taxids<Keep>(&mut self, keep: Keep) where Keep: FnMut(TaxId) -> bool;
 
     type NameLookup;
     fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup>;
 
-    type NamesLookupIter<'a>: Iterator<Item = &'a str>;
+    type NamesLookupIter<'a>: Iterator<Item = &'a str> + 'a;
     fn iter_lookup_names<'a>(lookup: &'a Self::NameLookup) -> Self::NamesLookupIter<'a>;
 
     type TaxIdsLookup;
     fn lookup_taxids<'a>(&'a self, name: &str) -> Option<&'a Self::TaxIdsLookup>;
 
-    type TaxIdsLookupIter<'a>: Iterator<Item = TaxId>;
+    type TaxIdsLookupIter<'a>: Iterator<Item = TaxId> + 'a;
     fn iter_lookup_taxids<'a>(lookup: &'a Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'a>;
 
     fn fill_from<P: AsRef<Path>>(&mut self, names_dmp: P) -> Result<(), DmpError> {
@@ -300,13 +347,13 @@ pub trait NamesAssoc {
                 &line => {
                     let taxid = next as "tax_id";
                     let name = next as "name_txt";
-                    let unique = next as "unique name";
+                    let unique_name = next as "unique name";
                     let name_class = next as "name class";
                 };
 
                 let taxid = NodeId(taxid.parse()?);
 
-                self.insert(taxid, name_class, name, unique);
+                self.insert(taxid, name, unique_name, name_class);
             }
         }
 
@@ -330,7 +377,7 @@ impl NamesAssoc for AllNames {
             .push((name_class, taxid));
     }
 
-    fn forget_taxids<Keep: FnMut(TaxId) -> bool>(&mut self, keep: Keep) {
+    fn forget_taxids<Keep: FnMut(TaxId) -> bool>(&mut self, mut keep: Keep) {
         self.unique_names.retain(|taxid, _| keep(*taxid));
 
         self.names_lookup.retain(|_, taxids| {
@@ -344,9 +391,9 @@ impl NamesAssoc for AllNames {
         self.unique_names.get(&taxid)
     }
 
-    type NamesLookupIter<'a> = impl Iterator<Item = &'a str>;
+    type NamesLookupIter<'a> = IterAsStr<hash_map::Values<'a, NameClassSymbol, String>>;
     fn iter_lookup_names<'a>(lookup: &'a Self::NameLookup) -> Self::NamesLookupIter<'a> {
-        lookup.values().map(|name| name.as_str())
+        IterAsStr(lookup.values())
     }
 
     type TaxIdsLookup = Vec<(NameClassSymbol, TaxId)>;
@@ -354,18 +401,38 @@ impl NamesAssoc for AllNames {
         self.names_lookup.get(name)
     }
 
-    type TaxIdsLookupIter<'a> = impl Iterator<Item = TaxId>;
+    type TaxIdsLookupIter<'a> = IterCopySnd<slice::Iter<'a, (NameClassSymbol, NodeId)>>;
     fn iter_lookup_taxids<'a>(lookup: &'a Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'a> {
-        lookup.iter().map(|(_, taxid)| *taxid)
+        IterCopySnd(lookup.iter())
+    }
+}
+
+pub struct IterAsStr<I>(I);
+
+impl<'a, I: Iterator<Item = &'a String>> Iterator for IterAsStr<I> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|s| &**s)
+    }
+}
+
+pub struct IterCopySnd<I>(I);
+
+impl<'a, T: 'a, U: 'a + Copy, I: Iterator<Item = &'a (T, U)>> Iterator for IterCopySnd<I> {
+    type Item = U;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(_, b)| *b)
     }
 }
 
 impl NamesAssoc for SingleClassNames {
     fn insert(&mut self, taxid: TaxId, name: &str, unique_name: &str, name_class: &str) {
         if name_class == self.name_class {
-            self.unique_names
+            self.names
                 .entry(taxid)
-                .or_insert_with(|| unique_name.to_owned());
+                .or_insert_with(|| if unique_name.is_empty() { name } else { unique_name }.to_owned());
 
             self.names_lookup
                 .entry(name.to_owned())
@@ -374,8 +441,8 @@ impl NamesAssoc for SingleClassNames {
         }
     }
 
-    fn forget_taxids<Keep>(&mut self, keep: Keep) where Keep: FnMut(TaxId) -> bool {
-        self.unique_names.retain(|taxid, _| keep(*taxid));
+    fn forget_taxids<Keep>(&mut self, mut keep: Keep) where Keep: FnMut(TaxId) -> bool {
+        self.names.retain(|taxid, _| keep(*taxid));
 
         self.names_lookup.retain(|_, taxids| {
             taxids.retain(|taxid| keep(*taxid));
@@ -385,7 +452,7 @@ impl NamesAssoc for SingleClassNames {
 
     type NameLookup = String;
     fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup> {
-        self.unique_names.get(&taxid)
+        self.names.get(&taxid)
     }
 
     type NamesLookupIter<'a> = std::iter::Once<&'a str>;
@@ -464,7 +531,7 @@ impl From<NcbiTaxonomy<SingleClassNames>> for SimpleTree {
     fn from(taxonomy: NcbiTaxonomy<SingleClassNames>) -> Self {
         let root = taxonomy.tree.root;
         let mut children_lookup = taxonomy.tree.children_lookup;
-        let mut names = taxonomy.names.unique_names;
+        let mut names = taxonomy.names.names;
 
         make_simple_tree(root, &mut children_lookup, &mut names)
     }

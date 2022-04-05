@@ -1,24 +1,27 @@
 #![feature(
+    associated_type_bounds,
+    associated_type_defaults,
     generic_associated_types,
-    never_type,
     io_read_to_string,
-    type_alias_impl_trait,
+    iterator_try_reduce,
     label_break_value,
+    never_type,
+    stdio_locked,
+    type_alias_impl_trait
 )]
 
-use anyhow::{Error, bail};
-use clap::{Parser, Args, Subcommand};
+use clap::{Parser, Subcommand};
 
 pub mod taxonomy;
-mod preprocess;
-
-#[derive(Args)]
-struct AssignArgs {}
+mod preprocess_blastout;
+mod preprocess_taxonomy;
+mod assign;
 
 #[derive(Subcommand)]
 enum Commands {
-    Preprocess(preprocess::PreprocessArgs),
-    Assign(AssignArgs),
+    PreprocessTaxonomy(preprocess_taxonomy::PreprocessTaxonomyArgs),
+    PreprocessBlastout(preprocess_blastout::PreprocessBlastOutArgs),
+    Assign(assign::AssignArgs),
 }
 
 /// Rust port of TANGO: Taxonomic Assignment in Metagenomics
@@ -28,16 +31,19 @@ struct Cli {
     command: Commands,
 }
 
-fn main() -> Result<(), Error> {
+fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
     match args.command {
-        Commands::Preprocess(args) => {
-            preprocess::preprocess(args)?;
-        },
-        Commands::Assign(AssignArgs {}) => {
-            bail!("assign is not yet implemented");
-        },
+        Commands::PreprocessTaxonomy(args) => {
+            preprocess_taxonomy::preprocess_taxonomy(args)?;
+        }
+        Commands::PreprocessBlastout(args) => {
+            preprocess_blastout::preprocess_blastout(args)?;
+        }
+        Commands::Assign(args) => {
+            assign::assign(args)?;
+        }
     }
 
     Ok(())

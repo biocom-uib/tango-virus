@@ -2,16 +2,17 @@ use std::{
     collections::HashMap,
     error::Error,
     io::{self, Read, Write},
-    string::FromUtf8Error, path::Path, fs::File,
+    string::FromUtf8Error, path::Path, fs::File, iter, slice,
 };
 
+use itertools::Itertools;
 use newick_rs::{newick, SimpleTree};
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 
-use crate::taxonomy::{NodeId, Taxonomy};
+use crate::taxonomy::{NodeId, Taxonomy, LabelledTaxonomy};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NewickTaxonomy {
     pub root: NodeId,
 
@@ -58,6 +59,8 @@ impl NewickTaxonomy {
 
             depths.push(depth);
 
+            assert!(depth < rank_storage.len());
+
             node_id
         };
 
@@ -81,17 +84,23 @@ impl NewickTaxonomy {
         let mut stack = vec![StackFrame::new(root, value.children)];
 
         let mut parent_ids = vec![root];
-        let mut children_lookup = Vec::new();
+        let mut children_lookup = vec!(vec![]);
 
         while let (depth, Some(frame)) = (stack.len(), stack.last_mut()) {
             if let Some(child) = frame.orig_children_iter.next() {
                 let child_id = new_node(child.name, depth);
+
                 assert!(parent_ids.len() == child_id.0);
                 parent_ids.push(frame.node_id);
                 frame.children.push(child_id);
+
+                assert!(children_lookup.len() == child_id.0);
+                children_lookup.push(vec![]);
+
                 stack.push(StackFrame::new(child_id, child.children));
             } else {
-                children_lookup.push(stack.pop().unwrap().children);
+                let popped = stack.pop().unwrap();
+                children_lookup[popped.node_id.0] = popped.children;
             }
         }
 
@@ -106,10 +115,14 @@ impl NewickTaxonomy {
         }
     }
 
-    pub fn load_newick(path: &Path, ranks: Vec<String>) -> Result<Self, NewickLoadError> {
+    pub fn load_newick(path: impl AsRef<Path>, ranks: Vec<String>) -> Result<Self, NewickLoadError> {
         let simple_tree = read_newick_simple_tree(File::open(path)?)?;
 
         Ok(Self::from_simple_tree(simple_tree, ranks))
+    }
+
+    pub fn all_nodes(&self) -> impl Iterator<Item = NodeId> {
+        (0..self.parent_ids.len()).map(NodeId)
     }
 }
 
@@ -126,6 +139,21 @@ impl Taxonomy for NewickTaxonomy {
         }
     }
 
+    fn has_uniform_depths(&self) -> Option<usize> {
+        let mut depths = self.all_nodes()
+            .filter(|&node| self.is_leaf(node))
+            .map(|node| self.depths[node.0])
+            .peekable();
+
+        let &depth = depths.peek().expect("Tree has no leaves");
+
+        if depths.all_equal() {
+            Some(depth)
+        } else {
+            None
+        }
+    }
+
     type Children<'a> = std::iter::Copied<std::slice::Iter<'a, NodeId>>;
 
     fn iter_children<'a>(&'a self, node: NodeId) -> Self::Children<'a> {
@@ -133,6 +161,10 @@ impl Taxonomy for NewickTaxonomy {
     }
 
     type RankSym = usize;
+
+    fn rank_sym_str(&self, rank_sym: Self::RankSym) -> Option<&str> {
+        self.rank_storage.get(rank_sym).map(|s| &**s)
+    }
 
     fn lookup_rank_sym(&self, rank: &str) -> Option<Self::RankSym> {
         self.rank_storage.iter().position(|r| r == rank)
@@ -144,6 +176,43 @@ impl Taxonomy for NewickTaxonomy {
 
     fn get_rank(&self, node: NodeId) -> Self::RankSym {
         self.depths[node.0]
+    }
+
+    type NodeRanks<'a> = EnumerateAsNodeId<iter::Copied<slice::Iter<'a, Self::RankSym>>>;
+
+    fn node_ranks<'a>(&'a self) -> Self::NodeRanks<'a> {
+        EnumerateAsNodeId {
+            inner: self.depths.iter().copied().enumerate(),
+        }
+    }
+}
+
+impl LabelledTaxonomy for NewickTaxonomy {
+    type Labels<'a> = std::option::IntoIter<&'a str>;
+
+    fn labels_of<'a>(&'a self, node: NodeId) -> Self::Labels<'a> {
+        self.labels.get(node.0).map(String::as_str).into_iter()
+    }
+
+    type NodesWithLabel<'a> =
+        std::iter::Copied<std::iter::Flatten<std::option::IntoIter<&'a Vec<NodeId>>>>;
+
+    fn nodes_with_label<'a>(&'a self, label: &'a str) -> Self::NodesWithLabel<'a> {
+        self.label_lookup.get(label).into_iter().flatten().copied()
+    }
+}
+
+pub struct EnumerateAsNodeId<I> {
+    inner: iter::Enumerate<I>,
+}
+
+impl<I: Iterator> Iterator for EnumerateAsNodeId<I> {
+    type Item = (NodeId, <I as Iterator>::Item);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (i, x) = self.inner.next()?;
+
+        Some((NodeId(i), x))
     }
 }
 
@@ -187,5 +256,140 @@ impl From<NewickTaxonomy> for SimpleTree {
         let mut labels = taxonomy.labels;
 
         make_simple_tree(root, &mut children_lookup, &mut labels)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use itertools::Itertools;
+    use newick_rs::SimpleTree;
+
+    use crate::taxonomy::{formats::newick::NewickTaxonomy, Taxonomy, LabelledTaxonomy};
+
+    macro_rules! newick_literal {
+        ([ $($trees:tt),+ ] $name:expr) => {
+            SimpleTree {
+                name: $name.to_string(),
+                children: vec![ $( newick_literal!($trees) ),+ ],
+                length: None
+            }
+        };
+
+        (($sub:ident)) => {
+            $sub
+        };
+
+        ($name:expr) => {
+            SimpleTree {
+                name: $name.to_string(),
+                children: vec![],
+                length: None
+            }
+        };
+    }
+
+    #[test]
+    fn ancestors() {
+        fn chain(n: u32) -> SimpleTree {
+            if n == 0 {
+                newick_literal!( 0u32 )
+            } else {
+                let sub = chain(n-1);
+                newick_literal!( [ (sub) ] n )
+            }
+        }
+
+        let simple_t = chain(5);
+
+        let ranks = "a,b,c,d,e,f".split(',').map(|s| s.to_owned()).collect_vec();
+
+        let t = NewickTaxonomy::from_simple_tree(simple_t, ranks);
+
+        assert_eq!(
+            t.ancestors(t.nodes_with_label("0").next().unwrap())
+                .map(|node| t.labels_of(node).next().unwrap())
+                .collect_vec(),
+            vec!["1", "2", "3", "4", "5"]
+        );
+    }
+
+    #[test]
+    fn postorder_descendants() {
+        let sub = newick_literal!{ [1i32, 2i32] 3i32 };
+        let simple_t = newick_literal!{ [ 0i32, (sub) ] 4i32 };
+
+        let ranks = "a,b,c".split(',').map(|s| s.to_owned()).collect_vec();
+
+        let t = NewickTaxonomy::from_simple_tree(simple_t, ranks);
+
+        println!("{t:?}");
+
+        assert_eq!(
+            t.postorder_descendants(t.get_root())
+                .map(|node| t.some_label_of(node).unwrap())
+                .collect_vec(),
+            vec!["0", "1", "2", "3", "4"]
+        );
+    }
+
+    #[test]
+    fn preorder_edges() {
+        let sub = newick_literal!{ [1i32, 2i32] 3i32 };
+        let simple_t = newick_literal!{ [ 0i32, (sub) ] 4i32 };
+
+        let ranks = "a,b,c".split(',').map(|s| s.to_owned()).collect_vec();
+
+        let t = NewickTaxonomy::from_simple_tree(simple_t, ranks);
+
+        assert_eq!(
+            t.preorder_edges(t.get_root())
+                .map(|(_parent, node)| t.some_label_of(node).unwrap())
+                .collect_vec(),
+            vec!["0", "3", "1", "2"]
+        );
+    }
+
+    #[test]
+    fn lca() {
+        let sub = newick_literal!{ [1i32, 2i32] 3i32 };
+        let simple_t = newick_literal!{ [ 0i32, (sub) ] 4i32 };
+
+        // [0, [1, 2] 3] 4
+
+        let ranks = "a,b,c".split(',').map(|s| s.to_owned()).collect_vec();
+
+        let t = NewickTaxonomy::from_simple_tree(simple_t, ranks);
+
+        assert_eq!(
+            t.lca(
+                t.some_node_with_label("1").unwrap(),
+                t.some_node_with_label("2").unwrap(),
+            ),
+            Some(t.some_node_with_label("3").unwrap()),
+        );
+
+        assert_eq!(
+            t.lca(
+                t.some_node_with_label("0").unwrap(),
+                t.some_node_with_label("1").unwrap(),
+            ),
+            Some(t.some_node_with_label("4").unwrap()),
+        );
+
+        assert_eq!(
+            t.lca(
+                t.some_node_with_label("1").unwrap(),
+                t.some_node_with_label("3").unwrap(),
+            ),
+            Some(t.some_node_with_label("3").unwrap()),
+        );
+
+        assert_eq!(
+            t.lca(
+                t.some_node_with_label("1").unwrap(),
+                t.some_node_with_label("1").unwrap(),
+            ),
+            Some(t.some_node_with_label("1").unwrap()),
+        );
     }
 }
