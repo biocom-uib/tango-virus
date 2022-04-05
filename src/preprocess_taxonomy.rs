@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::taxonomy::{
     formats::{
-        ncbi::{self, NcbiTaxonomy, SingleClassNames},
+        ncbi::{self, NcbiTaxonomy, AllNames},
         newick::NewickTaxonomy,
     },
     TaxonomyMut,
@@ -22,6 +22,7 @@ pub enum TaxonomyFormat {
 #[derive(Deserialize, Serialize)]
 pub enum SomeTaxonomy {
     NcbiTaxonomyWithSingleClassNames(NcbiTaxonomy<ncbi::SingleClassNames>),
+    NcbiTaxonomyWithManyNames(NcbiTaxonomy<ncbi::AllNames>),
     NewickTaxonomy(NewickTaxonomy),
 }
 
@@ -78,6 +79,10 @@ pub struct PreprocessTaxonomyArgs {
     /// Path to the input taxonomy (in the case of NCBI, specify the extracted directory of taxdump)
     input_taxonomy: String,
 
+    /// Comma-separated list of name classes to load (if INPUT_FORMAT is ncbi)
+    #[clap(long, default_value = "scientific name,synonym")]
+    ncbi_name_classes: String,
+
     /// Comma-separated list of rank names to associate to each level of the Newick taxonomy (if
     /// INPUT_FORMAT is newick)
     #[clap(long)]
@@ -94,13 +99,20 @@ pub struct PreprocessTaxonomyArgs {
 impl PreprocessTaxonomyArgs {
     pub fn get_contraction_ranks(&self) -> Option<Vec<&str>> {
         self.contract.as_ref().map(|ranks| {
-            ranks.as_deref().unwrap_or(DEFAULT_CONTRACTION_RANKS).split(',').map(str::trim).collect()
+            ranks
+                .as_deref()
+                .unwrap_or(DEFAULT_CONTRACTION_RANKS)
+                .split(',')
+                .map(str::trim)
+                .collect()
         })
     }
 }
 
 fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedTaxonomy> {
     let mut path = PathBuf::from(&args.input_taxonomy);
+
+    let name_classes = args.ncbi_name_classes.split(',').collect_vec();
 
     let mut taxo = {
         path.push("nodes.dmp");
@@ -114,7 +126,12 @@ fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedT
         eprintln!("Loaded merged.dmp");
 
         path.push("names.dmp");
-        let names = SingleClassNames::load_names_dmp("scientific name".to_owned(), &path)?;
+
+        let names = AllNames::load_filtered_names_dmp(
+            |name_class| name_classes.contains(&name_class),
+            &path,
+        )?;
+
         path.pop();
         eprintln!("Loaded names.dmp");
 
@@ -127,7 +144,14 @@ fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedT
     }
 
     Ok(PreprocessedTaxonomy {
-        tree: SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(taxo)
+        tree: if name_classes.len() == 1 {
+            match std::mem::take(&mut taxo.names).only_of_class(name_classes[0]) {
+                Ok(names) => SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(taxo.with_names(names)),
+                Err(names) => SomeTaxonomy::NcbiTaxonomyWithManyNames(taxo.with_names(names)),
+            }
+        } else {
+            SomeTaxonomy::NcbiTaxonomyWithManyNames(taxo)
+        }
     })
 }
 

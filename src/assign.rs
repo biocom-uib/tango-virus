@@ -12,6 +12,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::preprocess_blastout;
 use crate::preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy};
+use crate::taxonomy::formats::ncbi::NcbiTaxonomy;
 use crate::taxonomy::{LabelledTaxonomy, NodeId};
 
 
@@ -271,6 +272,28 @@ where
     })
 }
 
+fn ncbi_taxonomy_lookup_taxid<'a, Names>(
+    tax: &'a NcbiTaxonomy<Names>,
+) -> impl Fn(&str) -> Vec<NodeId> + 'a
+{
+    |name: &str| {
+        name.parse()
+            .into_iter()
+            .map(NodeId)
+            .filter_map(|node| tax.fixup_node(node))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect_vec()
+    }
+}
+
+fn labelled_taxonomy_lookup_taxid<'a, Tax>(tax: &'a Tax) -> impl Fn(&str) -> Vec<NodeId> + 'a
+where
+    Tax: LabelledTaxonomy,
+{
+    |name: &str| tax.nodes_with_label(name).collect_vec()
+}
+
 fn load_reads_and_produce_assignments(
     reads_path: &str,
     taxonomy: &PreprocessedTaxonomy,
@@ -291,15 +314,7 @@ fn load_reads_and_produce_assignments(
                     csv_reader,
                     &header,
                     tax,
-                    |name: &str| {
-                        name.parse()
-                            .into_iter()
-                            .map(NodeId)
-                            .filter_map(|node| tax.fixup_node(node))
-                            .collect::<HashSet<_>>()
-                            .into_iter()
-                            .collect_vec()
-                    },
+                    ncbi_taxonomy_lookup_taxid(tax),
                     q,
                     sender,
                 )?;
@@ -308,7 +323,7 @@ fn load_reads_and_produce_assignments(
                     csv_reader,
                     &header,
                     tax,
-                    |name: &str| tax.nodes_with_label(name).collect_vec(),
+                    labelled_taxonomy_lookup_taxid(tax),
                     q,
                     sender,
                 )?;
@@ -316,13 +331,37 @@ fn load_reads_and_produce_assignments(
                 anyhow::bail!("Unable to map read subject ID's to NCBI Taxonomy ID's")
             }
         }
+        SomeTaxonomy::NcbiTaxonomyWithManyNames(tax) => {
+            if header.subjects_id_col == preprocess_blastout::fields::STAXID.0 {
+                produce_assignments(
+                    csv_reader,
+                    &header,
+                    tax,
+                    ncbi_taxonomy_lookup_taxid(tax),
+                    q,
+                    sender,
+                )?;
+            } else if header.subjects_id_col == preprocess_blastout::fields::SSCINAME.0 {
+                produce_assignments(
+                    csv_reader,
+                    &header,
+                    tax,
+                    labelled_taxonomy_lookup_taxid(tax),
+                    q,
+                    sender,
+                )?;
+            } else {
+                anyhow::bail!("Unable to map read subject ID's to NCBI Taxonomy ID's")
+            }
+        },
         SomeTaxonomy::NewickTaxonomy(tax) => {
             eprintln!("Warning: Unable to verify Newick taxonomy labels, check that subject ID's are correctly matched");
+
             produce_assignments(
                 csv_reader,
                 &header,
                 tax,
-                |name: &str| tax.nodes_with_label(name).collect_vec(),
+                labelled_taxonomy_lookup_taxid(tax),
                 q,
                 sender,
             )?;
@@ -415,6 +454,13 @@ where
 {
     match &taxonomy.tree {
         SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax) => {
+            if output == "-" {
+                write_assignments(io::stdout(), tax, records)?;
+            } else {
+                write_assignments(File::create(output)?, tax, records)?;
+            };
+        }
+        SomeTaxonomy::NcbiTaxonomyWithManyNames(tax) => {
             if output == "-" {
                 write_assignments(io::stdout(), tax, records)?;
             } else {

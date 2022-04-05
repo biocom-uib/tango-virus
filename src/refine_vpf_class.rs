@@ -125,10 +125,10 @@ struct VpfClassRecord {
     confidence_score: f64,
 }
 
-fn open_and_refine_vpf_class<'a, Tax: LabelledTaxonomy<RankSym: 'static>, P: AsRef<Path>>(
+fn open_and_refine_vpf_class<'a, Tax: LabelledTaxonomy, P: AsRef<Path>>(
     tax: &'a Tax,
     rank_sym: Tax::RankSym,
-    present: &'a HashSet<NodeId>,
+    present: HashSet<NodeId>,
     allow_different_ranks: bool,
     path: P,
 ) -> Result<impl Iterator<Item = csv::Result<VpfClassRecord>> + 'a> {
@@ -174,6 +174,22 @@ fn open_and_refine_vpf_class<'a, Tax: LabelledTaxonomy<RankSym: 'static>, P: AsR
     Ok(result)
 }
 
+fn load_assignment_and_refine_vpf_class<'a, P1: AsRef<Path>, P2: 'a + AsRef<Path>, Tax: LabelledTaxonomy>(
+    tax: &'a Tax,
+    rank: &'a str,
+    include_descendants: bool,
+    assignments_path: P1,
+    allow_different_ranks: bool,
+    vpf_class_prediciton_path: P2,
+) -> Result<impl Iterator<Item = csv::Result<VpfClassRecord>> + 'a> {
+
+    let (rank_sym, present) = load_assignment_found_taxids(tax, rank, include_descendants, assignments_path)
+        .context("Error collecting metagenomic assignment taxids")?;
+
+    open_and_refine_vpf_class(tax, rank_sym, present, allow_different_ranks, vpf_class_prediciton_path)
+        .context("Error reading VPF-Class output")
+}
+
 fn write_refined_output<W, I, E: 'static>(writer: W, refinement: I) -> Result<()>
 where
     W: io::Write,
@@ -205,53 +221,43 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
         args.taxonomy_format
     )?;
 
-    let present;
-
     let refinement = match &taxonomy.tree {
         SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax) => {
-            let rank_sym;
-
-            (rank_sym, present) = load_assignment_found_taxids(
+            let r = load_assignment_and_refine_vpf_class(
                 tax,
                 &rank,
                 args.include_descendants,
                 &args.metagenomic_assignment,
-            )
-            .context("Error collecting metagenomic assignment taxids")?;
+                args.allow_different_ranks,
+                &args.vpf_class_prediction
+            )?;
 
-            Either::Left(
-                open_and_refine_vpf_class(
-                    tax,
-                    rank_sym,
-                    &present,
-                    args.allow_different_ranks,
-                    &args.vpf_class_prediction,
-                )
-                .context("Error reading VPF-Class output")?,
-            )
-        }
+            Either::Left(Either::Left(r))
+        },
+        SomeTaxonomy::NcbiTaxonomyWithManyNames(tax) => {
+            let r = load_assignment_and_refine_vpf_class(
+                tax,
+                &rank,
+                args.include_descendants,
+                &args.metagenomic_assignment,
+                args.allow_different_ranks,
+                &args.vpf_class_prediction
+            )?;
+
+            Either::Left(Either::Right(r))
+        },
         SomeTaxonomy::NewickTaxonomy(tax) => {
-            let rank_sym;
-
-            (rank_sym, present) = load_assignment_found_taxids(
+            let r = load_assignment_and_refine_vpf_class(
                 tax,
                 &rank,
                 args.include_descendants,
                 &args.metagenomic_assignment,
-            )
-            .context("Error collecting metagenomic assignment taxids")?;
+                args.allow_different_ranks,
+                &args.vpf_class_prediction
+            )?;
 
-            Either::Right(
-                open_and_refine_vpf_class(
-                    tax,
-                    rank_sym,
-                    &present,
-                    args.allow_different_ranks,
-                    &args.vpf_class_prediction,
-                )
-                .context("Error reading VPF-Class output")?,
-            )
-        }
+            Either::Right(r)
+        },
     };
 
     if args.output == "-" {

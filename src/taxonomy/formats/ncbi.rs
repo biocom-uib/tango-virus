@@ -12,7 +12,7 @@ use newick_rs::SimpleTree;
 use serde::{Deserialize, Serialize};
 use string_interner::{
     backend::{Backend, StringBackend},
-    StringInterner,
+    StringInterner, symbol::SymbolU32, Symbol,
 };
 use thiserror::Error;
 
@@ -20,12 +20,12 @@ pub type TaxId = NodeId;
 
 #[derive(Deserialize, Serialize)]
 pub struct NcbiTaxonomy<Names> {
-    pub tree: GenericTaxonomy,
+    pub(crate) tree: GenericTaxonomy,
 
     // old to new
-    pub merged_taxids: Option<HashMap<TaxId, TaxId>>,
+    pub(crate) merged_taxids: Option<HashMap<TaxId, TaxId>>,
 
-    pub names: Names,
+    pub(crate) names: Names,
 }
 
 #[derive(Debug, Error)]
@@ -97,12 +97,23 @@ impl<Names> NcbiTaxonomy<Names> {
     }
 
     pub fn with_names<NewNames>(self, new_names: NewNames) -> NcbiTaxonomy<NewNames> {
-        NcbiTaxonomy {
-            tree: self.tree,
-            merged_taxids: self.merged_taxids,
-            names: new_names,
-        }
-   }
+       NcbiTaxonomy {
+          tree: self.tree,
+          merged_taxids: self.merged_taxids,
+          names: new_names,
+       }
+    }
+
+    pub fn map_names<F, NewNames>(self, f: F) -> NcbiTaxonomy<NewNames>
+    where
+        F: FnOnce(Names) -> NewNames
+    {
+       NcbiTaxonomy {
+          tree: self.tree,
+          merged_taxids: self.merged_taxids,
+          names: f(self.names),
+       }
+    }
 }
 
 impl NcbiTaxonomy<NoNames> {
@@ -241,8 +252,22 @@ impl<Names: NamesAssoc + Send + 'static> TaxonomyMut for NcbiTaxonomy<Names> {
 }
 
 
-pub type NameClassSymbol = <StringBackend as Backend>::Symbol;
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NameClassSymbol(u32);
 
+impl From<SymbolU32> for NameClassSymbol {
+    fn from(sym: SymbolU32) -> Self {
+       NameClassSymbol(sym.to_usize() as u32)
+    }
+}
+
+impl From<NameClassSymbol> for SymbolU32 {
+   fn from(sym: NameClassSymbol) -> Self {
+      <SymbolU32 as Symbol>::try_from_usize(sym.0 as usize).unwrap()
+   }
+}
+
+#[derive(Default, Serialize, Deserialize)]
 pub struct AllNames {
     pub name_classes: StringInterner,
     pub unique_names: HashMap<TaxId, HashMap<NameClassSymbol, String>>,
@@ -250,19 +275,27 @@ pub struct AllNames {
 }
 
 impl AllNames {
-    pub fn load_names_dmp<P: AsRef<Path>>(names_dmp: P) -> Result<Self, DmpError> {
+    pub fn load_filtered_names_dmp<Pred, P>(class_filter: Pred, names_dmp: P) -> Result<Self, DmpError>
+    where
+        Pred: Fn(&str) -> bool,
+        P: AsRef<Path>,
+    {
         let mut this = AllNames {
             name_classes: StringInterner::new(),
             unique_names: HashMap::new(),
             names_lookup: HashMap::new(),
         };
 
-        this.fill_from(names_dmp)?;
+        this.fill_from(class_filter, names_dmp)?;
         Ok(this)
     }
 
-    pub fn only_of_class(self, name_class: &str) -> Option<SingleClassNames> {
-        let single_class = self.name_classes.get(name_class)?;
+    pub fn only_of_class(self, name_class: &str) -> Result<SingleClassNames, Self> {
+        let single_class = if let Some(sym) = self.name_classes.get(name_class) {
+           sym.into()
+        } else {
+           return Err(self)
+        };
 
         let unique_names = self
             .unique_names
@@ -288,7 +321,7 @@ impl AllNames {
             })
             .collect();
 
-        Some(SingleClassNames {
+        Ok(SingleClassNames {
             name_class: name_class.to_owned(),
             names: unique_names,
             names_lookup,
@@ -314,7 +347,7 @@ impl SingleClassNames {
             names_lookup: HashMap::new(),
         };
 
-        this.fill_from(names_dmp)?;
+        this.fill_from(|_| true, names_dmp)?;
         Ok(this)
     }
 }
@@ -345,7 +378,11 @@ pub trait NamesAssoc {
     type TaxIdsLookupIter<'a>: Iterator<Item = TaxId> + 'a;
     fn iter_lookup_taxids<'a>(lookup: &'a Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'a>;
 
-    fn fill_from<P: AsRef<Path>>(&mut self, names_dmp: P) -> Result<(), DmpError> {
+    fn fill_from<F, P>(&mut self, class_filter: F, names_dmp: P) -> Result<(), DmpError>
+    where
+        F: Fn(&str) -> bool,
+        P: AsRef<Path>,
+    {
         for line in BufReader::new(File::open(names_dmp)?).lines() {
             let line = line?;
 
@@ -359,7 +396,9 @@ pub trait NamesAssoc {
 
                 let taxid = NodeId(taxid.parse()?);
 
-                self.insert(taxid, name, unique_name, name_class);
+                if class_filter(name_class) {
+                   self.insert(taxid, name, unique_name, name_class);
+                }
             }
         }
 
@@ -369,7 +408,7 @@ pub trait NamesAssoc {
 
 impl NamesAssoc for AllNames {
     fn insert(&mut self, taxid: TaxId, name: &str, unique_name: &str, name_class: &str) {
-        let name_class = self.name_classes.get_or_intern(name_class);
+        let name_class = self.name_classes.get_or_intern(name_class).into();
 
         self.unique_names
             .entry(taxid)
@@ -502,7 +541,11 @@ impl NamesAssoc for NoNames {
         std::iter::empty()
     }
 
-    fn fill_from<P: AsRef<Path>>(&mut self, _names_dmp: P) -> Result<(), DmpError> {
+    fn fill_from<F, P>(&mut self, _class_filter: F, _names_dmp: P) -> Result<(), DmpError>
+    where
+        F: Fn(&str) -> bool,
+        P: AsRef<Path>,
+    {
         Ok(())
     }
 }
