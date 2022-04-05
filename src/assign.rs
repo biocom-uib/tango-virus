@@ -240,14 +240,14 @@ where
 
                 match taxids.len() {
                     0 => {
-                        eprintln!("Warning: No taxid with name {name:?} found in the taxonomy, skipping");
+                        eprintln!("\nWarning: No taxid matching {name:?} found in the taxonomy, skipping");
                         None
                     },
                     1 => {
                         Some(taxids[0])
                     },
                     _ => {
-                        eprintln!("Warning: Multiple taxids found with name {name:?} in the taxonomy, returning the latest one");
+                        eprintln!("\nWarning: Multiple taxids matched {name:?} in the taxonomy, returning the latest one");
                         taxids.iter().max().copied()
                     },
                 }
@@ -365,16 +365,16 @@ where
             let assigned_name = match tax.labels_of(assigned_node).exactly_one() {
                 Ok(label) => {
                     if label.is_empty() {
-                        eprintln!("Warning: Empty label found for taxid {assigned_node}");
+                        eprintln!("\nWarning: Empty label found for taxid {assigned_node}");
                     }
                     label
                 }
                 Err(mut err) => {
                     if let Some(label) = err.next() {
-                        eprintln!("Warning: Found more than one label for taxid {assigned_node}");
+                        eprintln!("\nWarning: Found more than one label for taxid {assigned_node}");
                         label
                     } else {
-                        eprintln!("Warning: No label found for taxid {assigned_node}");
+                        eprintln!("\nWarning: No label found for taxid {assigned_node}");
                         ""
                     }
                 }

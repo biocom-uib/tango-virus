@@ -44,11 +44,15 @@ pub struct RefineVpfClassArgs {
 }
 
 impl RefineVpfClassArgs {
-    fn get_or_infer_rank(&self) -> Option<&str> {
-        self.rank.as_deref().or_else(|| {
-            self.vpf_class_prediction
+    fn get_or_infer_rank(&self) -> Option<String> {
+        self.rank.to_owned().or_else(|| {
+            let path: &Path = self.vpf_class_prediction.as_ref();
+
+            path.file_name().and_then(|s| {
+                s.to_string_lossy()
                 .strip_prefix("host_")
-                .and_then(|s| s.strip_suffix(".tsv"))
+                .map(ToOwned::to_owned)
+            })
         })
     }
 }
@@ -182,17 +186,17 @@ where
 }
 
 pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
-    let taxonomy = PreprocessedTaxonomy::deserialize_with_format(
-        &args.preprocessed_taxonomy,
-        args.taxonomy_format
-    )?;
-
     let rank = args.get_or_infer_rank().ok_or_else(|| {
         anyhow::anyhow!(
             "--rank not specified and could not be deduced from {:?}",
             &args.vpf_class_prediction
         )
     })?;
+
+    let taxonomy = PreprocessedTaxonomy::deserialize_with_format(
+        &args.preprocessed_taxonomy,
+        args.taxonomy_format
+    )?;
 
     let present;
 
@@ -202,7 +206,7 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
 
             (rank_sym, present) = load_assignment_found_taxids(
                 tax,
-                rank,
+                &rank,
                 args.include_descendants,
                 &args.metagenomic_assignment,
             )
@@ -224,7 +228,7 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
 
             (rank_sym, present) = load_assignment_found_taxids(
                 tax,
-                rank,
+                &rank,
                 args.include_descendants,
                 &args.metagenomic_assignment,
             )
