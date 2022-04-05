@@ -133,7 +133,7 @@ fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedT
         )?;
 
         path.pop();
-        eprintln!("Loaded names.dmp");
+        eprintln!("Loaded names.dmp with classes {name_classes:?}");
 
         taxo.with_names(names)
     };

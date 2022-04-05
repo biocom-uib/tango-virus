@@ -401,14 +401,11 @@ where
 
             let assigned_taxid = assigned_node.0;
 
-            let assigned_name = match tax.labels_of(assigned_node).exactly_one() {
-                Ok(label) => {
-                    if label.is_empty() {
-                        eprintln!("\nWarning: Empty label found for taxid {assigned_node}");
-                    }
-                    label
-                }
-                Err(mut err) => {
+            let assigned_name = tax
+                .labels_of(assigned_node)
+                .filter(|s| !s.is_empty())
+                .exactly_one()
+                .unwrap_or_else(|mut err| {
                     if let Some(label) = err.next() {
                         eprintln!("\nWarning: Found more than one label for taxid {assigned_node}");
                         label
@@ -416,8 +413,8 @@ where
                         eprintln!("\nWarning: No label found for taxid {assigned_node}");
                         ""
                     }
-                }
-            };
+                });
+
             let assigned_name = assigned_name.to_owned();
 
             let assigned_rank = tax
