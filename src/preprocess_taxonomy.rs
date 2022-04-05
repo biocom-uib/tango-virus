@@ -10,7 +10,7 @@ use crate::taxonomy::{
         ncbi::{self, NcbiTaxonomy, SingleClassNames},
         newick::NewickTaxonomy,
     },
-    TaxonomyMut, Taxonomy, NodeId,
+    TaxonomyMut,
 };
 
 #[derive(ArgEnum, Debug, Copy, Clone)]
@@ -102,19 +102,22 @@ impl PreprocessTaxonomyArgs {
 fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedTaxonomy> {
     let mut path = PathBuf::from(&args.input_taxonomy);
 
-    let taxo = {
+    let mut taxo = {
         path.push("nodes.dmp");
         let taxo = NcbiTaxonomy::load_nodes(&path)?;
         path.pop();
         eprintln!("Loaded nodes.dmp");
-        taxo
-    };
 
-    let mut taxo = {
+        path.push("merged.dmp");
+        let taxo = taxo.with_merged_taxids(&path)?;
+        path.pop();
+        eprintln!("Loaded merged.dmp");
+
         path.push("names.dmp");
         let names = SingleClassNames::load_names_dmp("scientific name".to_owned(), &path)?;
         path.pop();
         eprintln!("Loaded names.dmp");
+
         taxo.with_names(names)
     };
 

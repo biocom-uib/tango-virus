@@ -11,7 +11,7 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::preprocess_blastout;
 use crate::preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy};
-use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
+use crate::taxonomy::{LabelledTaxonomy, NodeId};
 
 
 #[derive(Clone, Debug, Default)]
@@ -294,7 +294,9 @@ fn load_reads_and_produce_assignments(
                         name.parse()
                             .into_iter()
                             .map(NodeId)
-                            .filter(|node| tax.has_node(*node))
+                            .filter_map(|node| tax.fixup_node(node))
+                            .collect::<HashSet<_>>()
+                            .into_iter()
                             .collect_vec()
                     },
                     q,
@@ -411,10 +413,6 @@ pub fn assign(args: AssignArgs) -> anyhow::Result<()> {
     )?;
     let taxonomy = &taxonomy;
     let q = Rational::from(args.q);
-
-    if let SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax) = &taxonomy.tree {
-        dbg!(tax.find_parent(NodeId(208964)));
-    }
 
     let (sender, receiver) = crossbeam::channel::unbounded();
 

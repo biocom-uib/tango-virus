@@ -86,8 +86,14 @@ impl<Names> NcbiTaxonomy<Names> {
         })
     }
 
-    pub fn has_node(&self, node: NodeId) -> bool {
-        self.tree.has_node(node)
+    pub fn fixup_node(&self, node: NodeId) -> Option<NodeId> {
+        if self.tree.has_node(node) {
+            Some(node)
+        } else if let Some(merged) = &self.merged_taxids {
+            merged.get(&node).copied()
+        } else {
+            None
+        }
     }
 
     pub fn with_names<NewNames>(self, new_names: NewNames) -> NcbiTaxonomy<NewNames> {
