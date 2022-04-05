@@ -50,7 +50,8 @@ impl RefineVpfClassArgs {
 
             path.file_name().and_then(|s| {
                 s.to_string_lossy()
-                .strip_prefix("host_")
+                .strip_suffix(".tsv")
+                .and_then(|name| name.strip_prefix("host_"))
                 .map(ToOwned::to_owned)
             })
         })
