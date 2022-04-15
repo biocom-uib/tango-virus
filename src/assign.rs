@@ -6,7 +6,7 @@ use clap::Args;
 use crossbeam::channel::Sender;
 use csv::{StringRecord, WriterBuilder};
 use extended_rational::Rational;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use serde::{Serialize, Deserialize};
 
@@ -18,7 +18,7 @@ use crate::taxonomy::{LabelledTaxonomy, NodeId};
 
 #[derive(Clone, Debug, Default)]
 struct TaxonAnnotations {
-    descendants: usize,
+    descendant_leaves: usize,
     matches: usize,
     nonmatches: usize,
     tps: usize,
@@ -58,36 +58,40 @@ fn annotate_match_count<Tax: LabelledTaxonomy>(
 
     let mut ann_map = HashMap::new();
 
-    for desc_id in taxonomy.postorder_descendants(reads_lca_id) {
-        let (descendants, matches) = if taxonomy.is_leaf(desc_id) {
+    for node in taxonomy.postorder_descendants(reads_lca_id) {
+        let (descendant_leaves, matches) = if taxonomy.is_leaf(node) {
             let mut anns = TaxonAnnotations::new();
-            if reads_node_ids.contains(&desc_id) {
+
+            anns.descendant_leaves = 1;
+
+            if reads_node_ids.contains(&node) {
                 anns.matches = 1;
             } else {
                 anns.matches = 0;
             }
+
             let matches = anns.matches;
             anns.nonmatches = 1 - matches;
 
-            assert!(ann_map.insert(desc_id, anns).is_none());
+            assert!(ann_map.insert(node, anns).is_none());
 
-            (0, matches)
+            (1, matches)
         } else {
             let anns = ann_map
-                .get_mut(&desc_id)
+                .get_mut(&node)
                 .expect("Node annotations should have been created by its children");
 
-            anns.nonmatches = 1 + anns.descendants - anns.matches;
+            anns.nonmatches = anns.descendant_leaves - anns.matches;
 
-            (anns.descendants, anns.matches)
+            (anns.descendant_leaves, anns.matches)
         };
 
-        if desc_id != taxonomy.get_root() && desc_id != reads_lca_id {
+        if node != taxonomy.get_root() && node != reads_lca_id {
             let parent_anns = ann_map
-                .entry(taxonomy.find_parent(desc_id).unwrap())
+                .entry(taxonomy.find_parent(node).unwrap())
                 .or_insert_with(TaxonAnnotations::new);
 
-            parent_anns.descendants += 1 + descendants;
+            parent_anns.descendant_leaves += descendant_leaves;
             parent_anns.matches += matches;
         }
     }
@@ -250,6 +254,17 @@ where
                     eprintln!("\nWarning: Multiple taxids matched {name:?} in the taxonomy, returning the latest one");
                     taxids.iter().max().copied()
                 },
+            }
+        })
+        .flat_map(|taxid| {
+            if tax.is_leaf(taxid) {
+                Either::Left(std::iter::once(taxid))
+            } else {
+                Either::Right(
+                    tax
+                    .postorder_descendants(taxid)
+                    .filter(|desc| tax.is_leaf(*desc))
+                )
             }
         })
         .collect();
