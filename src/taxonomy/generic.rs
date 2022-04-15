@@ -7,7 +7,6 @@ use thiserror::Error;
 
 use super::{NodeId, Taxonomy, TaxonomyMut, TopologyReplacer};
 
-
 pub type RankSymbol = <StringBackend as Backend>::Symbol;
 
 #[derive(Default, Deserialize, Serialize)]
@@ -55,6 +54,36 @@ impl GenericTaxonomy {
         }
 
         builder.build()
+    }
+
+    pub fn topology_health_check(&self) -> bool {
+        let check1 = || {
+            self.children_lookup.iter().all(|(parent, children)| {
+                let parent = *parent;
+
+                children
+                    .iter()
+                    .all(|&child| self.find_parent(child) == Some(parent))
+            })
+        };
+
+        let check2 = || {
+            self.parent_ids.iter().all(|(&child, &parent)| {
+                let r = self.children_lookup
+                    .get(&parent)
+                    .map_or(false, |children| children.contains(&child));
+
+                if !r {
+                    let parent_rank = self.find_rank(parent).and_then(|s| self.rank_sym_str(s));
+                    let child_rank = self.find_rank(child).and_then(|s| self.rank_sym_str(s));
+                    dbg!((parent, parent_rank, child, child_rank));
+                }
+
+                r
+            })
+        };
+
+        check1() && check2()
     }
 }
 
@@ -157,14 +186,14 @@ where
 impl TaxonomyMut for GenericTaxonomy {
     type UnderlyingTopology = Self;
 
-    fn replace_topology_with<Replacer>(&mut self, replacer: Replacer)
+    fn replace_topology_with<Replacer>(&mut self, replacer: Replacer) -> Replacer::Result
     where
-        Replacer: TopologyReplacer<Self::UnderlyingTopology>
+        Replacer: TopologyReplacer<Self::UnderlyingTopology>,
     {
         let mut parent_ids = HashMap::new();
         let mut children_lookup = HashMap::new();
 
-        replacer.replace_topology_with(self, |parent, child| {
+        let r = replacer.replace_topology_with(self, |parent, child| {
             parent_ids.insert(child, parent);
 
             children_lookup
@@ -180,6 +209,8 @@ impl TaxonomyMut for GenericTaxonomy {
         let mut ranks = mem::take(&mut self.ranks.ranks);
         ranks.retain(|node, _| self.has_node(*node));
         self.ranks.ranks = ranks;
+
+        r
     }
 }
 

@@ -1,16 +1,16 @@
 use std::{path::{PathBuf, Path}, fs::File};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use clap::{ArgEnum, Args};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::taxonomy::{
     formats::{
-        ncbi::{self, NcbiTaxonomy, AllNames},
+        ncbi::{self, AllNames, NamesAssoc, NcbiTaxonomy},
         newick::NewickTaxonomy,
     },
-    TaxonomyMut,
+    Taxonomy, TaxonomyMut,
 };
 
 #[derive(ArgEnum, Debug, Copy, Clone)]
@@ -29,6 +29,7 @@ pub enum SomeTaxonomy {
 #[derive(Deserialize, Serialize)]
 pub struct PreprocessedTaxonomy {
     pub tree: SomeTaxonomy,
+    pub ordered_ranks: Option<Vec<String>>,
 }
 
 #[derive(ArgEnum, Debug, Copy, Clone)]
@@ -109,19 +110,76 @@ impl PreprocessTaxonomyArgs {
     }
 }
 
+fn rank_syms_to_strings<'a, Tax: Taxonomy>(tax: &Tax, syms: &Vec<Tax::RankSym>) -> anyhow::Result<Vec<String>> {
+    syms.iter()
+        .map(|&sym| tax.rank_sym_str(sym).map(ToOwned::to_owned))
+        .collect::<Option<Vec<String>>>()
+        .ok_or_else(|| anyhow!("Unable to translate ordered_ranks to Vec<String>. This is a bug"))
+
+}
+
+fn contract_and_order_ranks<Names: 'static + NamesAssoc + Send>(
+    args: &PreprocessTaxonomyArgs,
+    tax: &mut NcbiTaxonomy<Names>,
+) -> anyhow::Result<Option<Vec<String>>> {
+    let ordered_ranks = if let Some(ranks) = &args.get_contraction_ranks() {
+        let contraction_ranks_syms: Vec<_> = ranks.iter()
+            .map(|rank| tax.lookup_rank_sym(rank).ok_or_else(|| anyhow!("Unrecognized rank {rank}")))
+            .try_collect()
+            .context("Error during contraction")?;
+
+        tax.contract(contraction_ranks_syms.iter().copied().collect());
+
+        let rank_ordering = tax.rank_ordering();
+
+        if let Ok(rank_ordering) = &rank_ordering {
+            assert_eq!(
+                rank_syms_to_strings(tax, rank_ordering)?,
+                rank_syms_to_strings(tax, &contraction_ranks_syms)?,
+            );
+        }
+
+        assert!(tax.topology_health_check());
+        //todo!("Review contraction, seems broken: see 208964 before/after");
+
+        rank_ordering
+    } else {
+        tax.rank_ordering()
+    };
+
+    let ordered_ranks = match ordered_ranks {
+        Ok(ordered_ranks) => {
+            Some(
+                rank_syms_to_strings(tax, &ordered_ranks)
+                    .context("Error mapping rank symbols back to strings. This is bug")?
+            )
+        },
+
+        Err(topsort_loop) => {
+            eprintln!(
+                "Warning: the taxonomy contains rank loops: {:?}",
+                rank_syms_to_strings(tax, &topsort_loop.0),
+            );
+            None
+        }
+    };
+
+    Ok(ordered_ranks)
+}
+
 fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedTaxonomy> {
     let mut path = PathBuf::from(&args.input_taxonomy);
 
     let name_classes = args.ncbi_name_classes.split(',').collect_vec();
 
-    let mut taxo = {
+    let mut tax = {
         path.push("nodes.dmp");
-        let taxo = NcbiTaxonomy::load_nodes(&path)?;
+        let tax = NcbiTaxonomy::load_nodes(&path)?;
         path.pop();
         eprintln!("Loaded nodes.dmp");
 
         path.push("merged.dmp");
-        let taxo = taxo.with_merged_taxids(&path)?;
+        let tax = tax.with_merged_taxids(&path)?;
         path.pop();
         eprintln!("Loaded merged.dmp");
 
@@ -130,23 +188,21 @@ fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedT
         path.pop();
         eprintln!("Loaded names.dmp with classes {name_classes:?}");
 
-        taxo.with_names(names)
+        tax.with_names(names)
     };
 
-    if let Some(ranks) = &args.get_contraction_ranks() {
-        taxo.contract(&ranks);
-        todo!("Review contraction, seems broken: see 208964 before/after");
-    }
+    let ordered_ranks = contract_and_order_ranks(&args, &mut tax)?;
 
     Ok(PreprocessedTaxonomy {
         tree: if name_classes.len() == 1 {
-            match std::mem::take(&mut taxo.names).only_of_class(name_classes[0]) {
-                Ok(names) => SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(taxo.with_names(names)),
-                Err(names) => SomeTaxonomy::NcbiTaxonomyWithManyNames(taxo.with_names(names)),
+            match std::mem::take(&mut tax.names).only_of_class(name_classes[0]) {
+                Ok(names) => SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax.with_names(names)),
+                Err(names) => SomeTaxonomy::NcbiTaxonomyWithManyNames(tax.with_names(names)),
             }
         } else {
-            SomeTaxonomy::NcbiTaxonomyWithManyNames(taxo)
-        }
+            SomeTaxonomy::NcbiTaxonomyWithManyNames(tax)
+        },
+        ordered_ranks,
     })
 }
 
@@ -159,14 +215,15 @@ fn preprocess_newick(args: PreprocessTaxonomyArgs) -> anyhow::Result<Preprocesse
         .map(|s| s.trim().to_owned())
         .collect_vec();
 
-    let taxo = NewickTaxonomy::load_newick(&args.input_taxonomy, ranks)?;
+    let tax = NewickTaxonomy::load_newick(&args.input_taxonomy, ranks.clone())?;
 
     if let Some(_ranks) = &args.get_contraction_ranks() {
         anyhow!("Contraction is not supported for Newick taxonomies");
     }
 
     Ok(PreprocessedTaxonomy {
-        tree: SomeTaxonomy::NewickTaxonomy(taxo)
+        tree: SomeTaxonomy::NewickTaxonomy(tax),
+        ordered_ranks: Some(ranks),
     })
 }
 

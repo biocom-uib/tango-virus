@@ -174,10 +174,6 @@ impl Taxonomy for NewickTaxonomy {
         self.depths.get(node.0).copied()
     }
 
-    fn get_rank(&self, node: NodeId) -> Self::RankSym {
-        self.depths[node.0]
-    }
-
     type NodeRanks<'a> = EnumerateAsNodeId<iter::Copied<slice::Iter<'a, Self::RankSym>>>;
 
     fn node_ranks<'a>(&'a self) -> Self::NodeRanks<'a> {

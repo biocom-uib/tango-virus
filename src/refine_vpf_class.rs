@@ -84,7 +84,7 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
 
         let valid_ancestor = iter::once(node)
             .chain(tax.ancestors(node))
-            .find(|&ancestor| rank_sym == tax.get_rank(ancestor));
+            .find(|&ancestor| Some(rank_sym) == tax.find_rank(ancestor));
 
         if let Some(valid_ancestor) = valid_ancestor {
             present.insert(valid_ancestor);
@@ -92,7 +92,7 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
         } else if include_descendants {
             let mut valid_descendants = tax
                 .postorder_descendants(node)
-                .filter(|&desc| rank_sym == tax.get_rank(desc))
+                .filter(|&desc| Some(rank_sym) == tax.find_rank(desc))
                 .peekable();
 
             if valid_descendants.peek().is_some() {
@@ -105,7 +105,7 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
                     "Warning: No valid descendants found for {:?} (taxid:{}) (rank: {})",
                     record.assigned_name,
                     node,
-                    tax.rank_sym_str(tax.get_rank(node)).unwrap_or("")
+                    tax.find_rank(node).and_then(|sym| tax.rank_sym_str(sym)).unwrap_or(""),
                 );
             }
         } else {
@@ -115,7 +115,7 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
                 "Warning: No valid ancestors found for {:?} (taxid:{}) (rank: {})",
                 record.assigned_name,
                 node,
-                tax.rank_sym_str(tax.get_rank(node)).unwrap_or(""),
+                tax.find_rank(node).and_then(|sym| tax.rank_sym_str(sym)).unwrap_or(""),
             );
         }
 
@@ -154,7 +154,7 @@ fn open_and_refine_vpf_class<'a, Tax: LabelledTaxonomy, P: AsRef<Path>>(
 
             for node in tax.nodes_with_label(&record.class_name) {
                 if present.contains(&node) {
-                    if allow_different_ranks || tax.get_rank(node) == rank_sym {
+                    if allow_different_ranks || tax.find_rank(node) == Some(rank_sym) {
                         return true;
                     } else {
                         had_candidate |= 0b10;

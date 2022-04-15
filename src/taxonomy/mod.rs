@@ -1,7 +1,9 @@
-use std::{fmt::Display, hash::Hash, collections::HashSet, iter, str::FromStr};
+use std::{fmt::{Debug, Display}, hash::Hash, collections::{HashSet, HashMap}, str::FromStr};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+
+use self::util::Loop;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub usize);
@@ -37,7 +39,7 @@ pub trait Taxonomy: Sized {
 
     fn iter_children<'a>(&'a self, node: NodeId) -> Self::Children<'a>;
 
-    type RankSym: Eq + Copy + Hash;
+    type RankSym: Eq + Copy + Debug + Hash;
 
     fn rank_sym_str(&self, rank_sym: Self::RankSym) -> Option<&str>;
 
@@ -45,9 +47,8 @@ pub trait Taxonomy: Sized {
 
     fn find_rank(&self, node: NodeId) -> Option<Self::RankSym>;
 
-    fn get_rank(&self, node: NodeId) -> Self::RankSym {
-        self.find_rank(node)
-            .unwrap_or_else(|| panic!("rank of {node} not found"))
+    fn find_rank_str(&self, node: NodeId) -> Option<&str> {
+        self.find_rank(node).and_then(|sym| self.rank_sym_str(sym))
     }
 
     type NodeRanks<'a>: Iterator<Item = (NodeId, Self::RankSym)> + 'a
@@ -55,6 +56,26 @@ pub trait Taxonomy: Sized {
         Self: 'a;
 
     fn node_ranks<'a>(&'a self) -> Self::NodeRanks<'a>;
+
+    fn rank_ordering(&self) -> Result<Vec<Self::RankSym>, Loop<Self::RankSym>> {
+        let rank_graph = self
+            .preorder_edges(self.get_root())
+            .filter_map(|(parent, child)| {
+                let parent_rank = self.find_rank(parent)?;
+                let child_rank = self.find_rank(child)?;
+
+                if parent_rank != child_rank {
+                    Some((parent_rank, child_rank))
+                } else {
+                    None
+                }
+            })
+            .into_grouping_map()
+            .collect();
+
+        // turbofish because rustc goes crazy
+        util::topsort::<Self::RankSym, HashSet<Self::RankSym>>(&rank_graph)
+    }
 
     fn ancestors<'a>(&'a self, node: NodeId) -> AncestorsIter<'a, Self> {
         AncestorsIter {
@@ -117,64 +138,75 @@ pub trait LabelledTaxonomy : Taxonomy {
 pub struct MissingRanks<R>(pub Vec<R>);
 
 pub trait TopologyReplacer<Tax> {
-    fn replace_topology_with<AddEdge>(self, tax: &Tax, add_edge: AddEdge)
+    type Result = ();
+
+    fn replace_topology_with<AddEdge>(self, tax: &Tax, add_edge: AddEdge) -> Self::Result
     where
         AddEdge: FnMut(NodeId, NodeId);
 }
 
-struct Contractor<Tax: Taxonomy> {
+pub struct Contractor<Tax: Taxonomy> {
     ranks_syms: HashSet<Tax::RankSym>,
 }
 
+impl<Tax: Taxonomy> Contractor<Tax> {
+    pub fn new(ranks_syms: HashSet<Tax::RankSym>) -> Self {
+        Self { ranks_syms }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ContractedNodes(pub HashMap<NodeId, NodeId>);
+
 impl<Tax: Taxonomy> TopologyReplacer<Tax> for Contractor<Tax> {
-    fn replace_topology_with<AddEdge>(self, tax: &Tax, mut add_edge: AddEdge)
+    type Result = ContractedNodes;
+
+    fn replace_topology_with<AddEdge>(self, tax: &Tax, mut add_edge: AddEdge) -> Self::Result
     where
         AddEdge: FnMut(NodeId, NodeId),
     {
         struct StackFrame<'tax, Tax: Taxonomy + 'tax> {
             contraction_parent: NodeId,
-            children_iter: iter::Peekable<Tax::Children<'tax>>,
+            children_iter: Tax::Children<'tax>,
         }
 
         impl<'tax, Tax: Taxonomy> StackFrame<'tax, Tax> {
             fn root_new(tax: &'tax Tax) -> Self {
                 let root = tax.get_root();
-                Self::new(root, tax.iter_children(root).peekable())
+                Self::new(root, tax.iter_children(root))
             }
 
-            fn new(contraction_parent: NodeId, children_iter: iter::Peekable<Tax::Children<'tax>>) -> Self {
+            fn new(contraction_parent: NodeId, children_iter: Tax::Children<'tax>) -> Self {
                 StackFrame { contraction_parent, children_iter }
             }
         }
 
+        let mut dropped = HashMap::new();
         let mut stack = vec![StackFrame::root_new(tax)];
 
         while let Some(frame) = stack.last_mut() {
             if let Some(child) = frame.children_iter.next() {
-                let mut grandchildren = tax.iter_children(child).peekable();
+                let child_valid_rank = tax
+                    .find_rank(child)
+                    .map_or(false, |rank_sym| self.ranks_syms.contains(&rank_sym));
 
-                // leaf
-                if grandchildren.peek().is_none() {
+                let contraction_parent = frame.contraction_parent;
+
+                let grandchildren = tax.iter_children(child);
+
+                if child_valid_rank {
                     add_edge(frame.contraction_parent, child);
-
-                // internal
+                    stack.push(StackFrame::new(child, grandchildren));
                 } else {
-                    match tax.find_rank(child) {
-                        Some(rank_sym) if self.ranks_syms.contains(&rank_sym) => {
-                            add_edge(frame.contraction_parent, child);
-                            stack.push(StackFrame::new(child, grandchildren));
-                        }
-                        _ => {
-                            // frame.node is not a valid parent
-                            let contraction_parent = frame.contraction_parent;
-                            stack.push(StackFrame::new(contraction_parent, grandchildren));
-                        }
-                    }
+                    dropped.insert(child, contraction_parent);
+                    stack.push(StackFrame::new(contraction_parent, grandchildren));
                 }
             } else {
                 stack.pop();
             }
         }
+
+        ContractedNodes(dropped)
     }
 }
 
@@ -182,29 +214,16 @@ pub trait TaxonomyMut: Taxonomy {
     type UnderlyingTopology: Taxonomy = Self;
 
     /// Need not free space
-    fn replace_topology_with<Replacer>(&mut self, replacer: Replacer)
+    fn replace_topology_with<Replacer>(&mut self, replacer: Replacer) -> Replacer::Result
     where
         Replacer: TopologyReplacer<Self::UnderlyingTopology>;
 
-    fn contract<'a, 'r, R>(&'a mut self, new_ranks: &'r [R]) -> MissingRanks<&'r R>
+    fn contract(&mut self, new_ranks: HashSet<Self::RankSym>) -> ContractedNodes
     where
-        R: AsRef<str> + Clone,
-        Self::UnderlyingTopology: for<'b> Taxonomy<Children<'b> = Self::Children<'b>, RankSym = Self::RankSym>,
+        Self::UnderlyingTopology:
+            for<'b> Taxonomy<Children<'b> = Self::Children<'b>, RankSym = Self::RankSym>,
     {
-        let mut missing_ranks = MissingRanks(Vec::new());
-        let mut ranks_syms = HashSet::new();
-
-        for rank in new_ranks {
-            if let Some(rank_sym) = self.lookup_rank_sym(rank.as_ref()) {
-                ranks_syms.insert(rank_sym);
-            } else {
-                missing_ranks.0.push(rank);
-            }
-        }
-
-        self.replace_topology_with(Contractor { ranks_syms });
-
-        missing_ranks
+        self.replace_topology_with(Contractor { ranks_syms: new_ranks })
     }
 }
 
@@ -300,3 +319,4 @@ impl<'tax, Tax: Taxonomy> Iterator for PostOrderIter<'tax, Tax> {
 
 pub mod generic;
 pub mod formats;
+pub(crate) mod util;

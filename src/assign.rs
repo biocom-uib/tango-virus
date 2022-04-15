@@ -6,14 +6,14 @@ use clap::Args;
 use crossbeam::channel::Sender;
 use csv::{StringRecord, WriterBuilder};
 use extended_rational::Rational;
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use serde::{Serialize, Deserialize};
 
 use crate::preprocess_blastout;
 use crate::preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy};
-use crate::taxonomy::formats::ncbi::NcbiTaxonomy;
-use crate::taxonomy::{LabelledTaxonomy, NodeId};
+use crate::taxonomy::formats::ncbi::{NcbiTaxonomy, NamesAssoc};
+use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
 
 
 #[derive(Clone, Debug, Default)]
@@ -170,7 +170,7 @@ pub struct AssignArgs {
 }
 
 struct ReadsCsvHeader {
-    query_id_col: String,
+    //query_id_col: String,
     subjects_id_col: String,
     weights_col: Option<String>,
 }
@@ -182,18 +182,18 @@ where
     let mut record = StringRecord::new();
     csv_reader.read_record(&mut record)?;
     assert!(record.len() == 2);
-    let query_id_col = record[0].to_owned();
+    let _query_id_col = record[0].to_owned();
     let subjects_col = &record[1];
 
     if let Some((subjects_id_col, weights_id)) = subjects_col.split_once('/') {
         Ok(ReadsCsvHeader {
-            query_id_col,
+            //query_id_col,
             subjects_id_col: subjects_id_col.to_owned(),
             weights_col: Some(weights_id.to_owned())
         })
     } else {
         Ok(ReadsCsvHeader {
-            query_id_col,
+            //query_id_col,
             subjects_id_col: subjects_col.to_owned(),
             weights_col: None,
         })
@@ -239,7 +239,7 @@ where
             record[1].split(';').collect()
         };
 
-        let subject_node_ids = subject_ids.iter().filter_map(|&name| {
+        let subject_node_ids: HashSet<_> = subject_ids.iter().filter_map(|&name| {
             let taxids = read_to_taxids(name);
 
             match taxids.len() {
@@ -256,54 +256,59 @@ where
                 },
             }
         })
-        .flat_map(|taxid| {
-            if tax.is_leaf(taxid) {
-                Either::Left(std::iter::once(taxid))
-            } else {
-                Either::Right(
-                    tax
-                    .postorder_descendants(taxid)
-                    .filter(|desc| tax.is_leaf(*desc))
-                )
-            }
-        })
         .collect();
 
-        let (lca_id, mut ann_map) = annotate_match_count(tax, &subject_node_ids)?;
+        if subject_node_ids.is_empty() {
+            eprintln!("\nWarning: Skipping {query_id} as none out of {} subject ids were recognized", subject_ids.len());
 
-        annotate_precision_recall(&mut ann_map, lca_id);
-        let (assigned_nodes, penalty) = assign_reads(&ann_map, q);
+        } else {
+            let (lca_id, mut ann_map) = annotate_match_count(tax, &subject_node_ids)?;
 
-        sender.send(QueryAssignments {
-            query_id: query_id.to_owned(),
-            assigned_nodes,
-            penalty: f32::from(penalty),
-        })?;
+            annotate_precision_recall(&mut ann_map, lca_id);
+            let (assigned_nodes, penalty) = assign_reads(&ann_map, q);
+
+            sender.send(QueryAssignments {
+                query_id: query_id.to_owned(),
+                assigned_nodes,
+                penalty: f32::from(penalty),
+            })?;
+        }
 
         anyhow::Ok(())
     })
 }
 
-fn ncbi_taxonomy_lookup_taxid<'a, Names>(
+fn ncbi_taxonomy_lookup_taxid_leaf<'a, Names: 'static + NamesAssoc + Send>(
     tax: &'a NcbiTaxonomy<Names>,
 ) -> impl Fn(&str) -> Vec<NodeId> + 'a
 {
     |name: &str| {
-        name.parse()
+        let mut v = name.parse()
             .into_iter()
             .map(NodeId)
             .filter_map(|node| tax.fixup_node(node))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect_vec()
+            .filter(|&node| tax.is_leaf(node))
+            .collect_vec();
+
+        v.sort();
+        v.dedup();
+        v
     }
 }
 
-fn labelled_taxonomy_lookup_taxid<'a, Tax>(tax: &'a Tax) -> impl Fn(&str) -> Vec<NodeId> + 'a
+fn labelled_taxonomy_lookup_taxid_leaf<'a, Tax>(tax: &'a Tax) -> impl Fn(&str) -> Vec<NodeId> + 'a
 where
     Tax: LabelledTaxonomy,
 {
-    |name: &str| tax.nodes_with_label(name).collect_vec()
+    |name: &str| {
+        let mut v = tax.nodes_with_label(name)
+            .filter(|&node| tax.is_leaf(node))
+            .collect_vec();
+
+        v.sort();
+        v.dedup();
+        v
+    }
 }
 
 fn load_reads_and_produce_assignments(
@@ -326,7 +331,7 @@ fn load_reads_and_produce_assignments(
                     csv_reader,
                     &header,
                     tax,
-                    ncbi_taxonomy_lookup_taxid(tax),
+                    ncbi_taxonomy_lookup_taxid_leaf(tax),
                     q,
                     sender,
                 )?;
@@ -335,7 +340,7 @@ fn load_reads_and_produce_assignments(
                     csv_reader,
                     &header,
                     tax,
-                    labelled_taxonomy_lookup_taxid(tax),
+                    labelled_taxonomy_lookup_taxid_leaf(tax),
                     q,
                     sender,
                 )?;
@@ -349,7 +354,7 @@ fn load_reads_and_produce_assignments(
                     csv_reader,
                     &header,
                     tax,
-                    ncbi_taxonomy_lookup_taxid(tax),
+                    ncbi_taxonomy_lookup_taxid_leaf(tax),
                     q,
                     sender,
                 )?;
@@ -358,7 +363,7 @@ fn load_reads_and_produce_assignments(
                     csv_reader,
                     &header,
                     tax,
-                    labelled_taxonomy_lookup_taxid(tax),
+                    labelled_taxonomy_lookup_taxid_leaf(tax),
                     q,
                     sender,
                 )?;
@@ -373,7 +378,7 @@ fn load_reads_and_produce_assignments(
                 csv_reader,
                 &header,
                 tax,
-                labelled_taxonomy_lookup_taxid(tax),
+                labelled_taxonomy_lookup_taxid_leaf(tax),
                 q,
                 sender,
             )?;
@@ -478,6 +483,8 @@ pub fn assign(args: AssignArgs) -> anyhow::Result<()> {
         &args.preprocessed_taxonomy,
         args.taxonomy_format,
     )?;
+    eprintln!("Loaded taxonomy");
+
     let taxonomy = &taxonomy;
     let q = Rational::from(args.q);
 
