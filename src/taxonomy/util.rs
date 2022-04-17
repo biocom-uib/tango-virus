@@ -21,6 +21,7 @@ where
     if !current_path.contains(&node) {
         current_path.push(node);
     } else {
+        current_path.push(node);
         return false;
     }
 
