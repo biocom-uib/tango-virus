@@ -356,7 +356,11 @@ fn load_blastout(
 
 
 fn group_blast_hits(hits: LazyFrame, query_id_col: &str, subject_id_col: &str) -> LazyFrame {
-    hits.select([col(query_id_col), col(subject_id_col).cast(DataType::Utf8)])
+    hits.filter(
+            col(query_id_col).is_not_null()
+                .and(col(subject_id_col).is_not_null())
+        )
+        .select([col(query_id_col), col(subject_id_col).cast(DataType::Utf8)])
         .distinct(None, DistinctKeepStrategy::First)
         .groupby([col(query_id_col)])
         .agg([col(subject_id_col).list()])
@@ -371,7 +375,12 @@ fn group_blast_hits_with_weights(
 ) -> LazyFrame {
     let zipped_subject_col = format!("{subject_id_col}/{weight_col}");
 
-    hits.select([col(query_id_col), col(subject_id_col), col(weight_col)])
+    hits.filter(
+            col(query_id_col).is_not_null()
+                .and(col(subject_id_col).is_not_null())
+                .and(col(weight_col).is_not_null())
+        )
+        .select([col(query_id_col), col(subject_id_col).cast(DataType::Utf8), col(weight_col)])
         .groupby([col(query_id_col), col(subject_id_col)])
         .agg([weight_col_agg(col(weight_col))])
         .select([
