@@ -1,18 +1,18 @@
-use std::{collections::HashSet, iter, path::Path, fs::File, io, error};
+use std::{collections::{HashSet, HashMap}, iter, path::Path, io, error};
 
 use anyhow::{Result, Context};
 use clap::Args;
-use itertools::Either;
-use serde::{Serialize, Deserialize};
+use itertools::Itertools;
+use serde::{Serialize, Deserialize, Serializer};
 
 use crate::{
-    preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy},
-    taxonomy::{NodeId, LabelledTaxonomy, Taxonomy}, assign::AssignmentRecord,
+    preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy, with_some_taxonomy},
+    taxonomy::{NodeId, LabelledTaxonomy, Taxonomy}, assign::AssignmentRecord, util::writing_new_file_or_stdout,
 };
 
 #[derive(Args)]
 pub struct RefineVpfClassArgs {
-    #[clap(long, arg_enum, default_value_t = PreprocessedTaxonomyFormat::CBOR)]
+    #[clap(long, arg_enum, default_value_t)]
     taxonomy_format: PreprocessedTaxonomyFormat,
 
     /// Path to the preprocessed taxonomy (presumably from preprocess-taxonomy)
@@ -25,7 +25,7 @@ pub struct RefineVpfClassArgs {
     vpf_class_prediction: String,
 
     /// Does the presence of a higher-ranked node in the metagenomic assignment imply the presence
-    /// of any lower node?
+    /// of any of its descendants?
     #[clap(long)]
     include_descendants: bool,
 
@@ -33,7 +33,7 @@ pub struct RefineVpfClassArgs {
     #[clap(long)]
     allow_different_ranks: bool,
 
-    /// VPF-Class output's taxonomic rank. If not specified, will be inferred from
+    /// VPF-Class output's taxonomic rank. If not specified, it will be inferred from
     /// `VPF_CLASS_PREDICTION`'s file name
     #[clap(short, long)]
     rank: Option<String>,
@@ -50,33 +50,63 @@ impl RefineVpfClassArgs {
 
             path.file_name().and_then(|s| {
                 s.to_string_lossy()
-                .strip_suffix(".tsv")
-                .and_then(|name| name.strip_prefix("host_"))
-                .map(ToOwned::to_owned)
+                    .strip_suffix(".tsv")
+                    .and_then(|name| name.strip_prefix("host_"))
+                    .map(ToOwned::to_owned)
             })
         })
     }
 }
 
-fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
+#[derive(Default)]
+struct RankAssignments {
+    rank_assignments: HashMap<NodeId, HashSet<NodeId>>,
+    rank_contigs: HashMap<NodeId, HashSet<String>>,
+    dropped_records: usize,
+    total_records: usize,
+}
+
+impl RankAssignments {
+    fn add_descendant_from_rank(&mut self, rank_node: NodeId, descendant: NodeId) {
+        self.rank_assignments.entry(rank_node).or_default().insert(descendant);
+    }
+
+    fn add_ascendant_at_rank(&mut self, rank_node: NodeId, ascendant: NodeId) {
+        self.rank_assignments.entry(rank_node).or_default().insert(ascendant);
+    }
+
+    fn add_contig_for_rank(&mut self, rank_node: NodeId, contig: String) {
+        self.rank_contigs.entry(rank_node).or_default().insert(contig);
+    }
+
+    fn add_contig_for_rank_cloned(&mut self, rank_node: NodeId, contig: &str) {
+        self.rank_contigs.entry(rank_node)
+            .or_default()
+            .get_or_insert_owned(contig);
+    }
+
+    fn lookup_rank_node(&self, rank_node: NodeId) -> Option<(&HashSet<NodeId>, &HashSet<String>)> {
+        let taxids = self.rank_assignments.get(&rank_node);
+        let contigs = self.rank_contigs.get(&rank_node);
+
+        assert_eq!(taxids.is_some(), contigs.is_some());
+
+        Option::zip(taxids, contigs)
+    }
+}
+
+fn load_rank_assignments<Tax: Taxonomy, P: AsRef<Path>>(
     tax: &Tax,
-    rank: &str,
+    rank_sym: Tax::RankSym,
     include_descendants: bool,
     assignments_path: P,
-) -> Result<(Tax::RankSym, (usize, usize), HashSet<NodeId>)> {
-    let rank_sym = tax
-        .lookup_rank_sym(rank)
-        .ok_or_else(|| anyhow::anyhow!("Rank not found in taxonomy: {rank}"))?;
-
+) -> Result<RankAssignments> {
     let csv_reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .delimiter(b'\t')
         .from_path(assignments_path)?;
 
-    let mut present = HashSet::new();
-
-    let mut num_dropped = 0;
-    let mut total_records = 0;
+    let mut assignments = RankAssignments::default();
 
     for record in csv_reader.into_deserialize() {
         let record: AssignmentRecord = record?;
@@ -87,7 +117,8 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
             .find(|&ancestor| Some(rank_sym) == tax.find_rank(ancestor));
 
         if let Some(valid_ancestor) = valid_ancestor {
-            present.insert(valid_ancestor);
+            assignments.add_descendant_from_rank(valid_ancestor, node);
+            assignments.add_contig_for_rank(valid_ancestor, record.assigned_name);
 
         } else if include_descendants {
             let mut valid_descendants = tax
@@ -96,10 +127,13 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
                 .peekable();
 
             if valid_descendants.peek().is_some() {
-                present.extend(valid_descendants);
+                for valid_descendant in valid_descendants {
+                    assignments.add_ascendant_at_rank(valid_descendant, node);
+                    assignments.add_contig_for_rank_cloned(valid_descendant, &record.assigned_name);
+                }
 
             } else {
-                num_dropped += 1;
+                assignments.dropped_records += 1;
 
                 eprintln!(
                     "Warning: No valid descendants found for {:?} (taxid:{}) (rank: {})",
@@ -109,7 +143,7 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
                 );
             }
         } else {
-            num_dropped += 1;
+            assignments.dropped_records += 1;
 
             eprintln!(
                 "Warning: No valid ancestors found for {:?} (taxid:{}) (rank: {})",
@@ -119,10 +153,10 @@ fn load_assignment_found_taxids<Tax: Taxonomy, P: AsRef<Path>>(
             );
         }
 
-        total_records += 1;
+        assignments.total_records += 1;
     }
 
-    Ok((rank_sym, (num_dropped, total_records), present))
+    Ok(assignments)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -134,77 +168,106 @@ struct VpfClassRecord {
     confidence_score: f64,
 }
 
+#[derive(Serialize)]
+struct EnrichedVpfClassRecord<'a> {
+    #[serde(flatten)]
+    vpf_class_record: VpfClassRecord,
+
+    #[serde(serialize_with = "serialize_assigned_taxids")]
+    assigned_taxids: HashSet<NodeId>,
+    #[serde(serialize_with = "serialize_assigned_contigs")]
+    assigned_contigs: HashSet<&'a str>,
+}
+
+impl<'a> EnrichedVpfClassRecord<'a> {
+    fn new(vpf_class_record: VpfClassRecord) -> Self {
+        EnrichedVpfClassRecord {
+            vpf_class_record,
+            assigned_taxids: HashSet::new(),
+            assigned_contigs: HashSet::new(),
+        }
+    }
+
+    fn has_assignments(&self) -> bool {
+        !self.assigned_taxids.is_empty() || !self.assigned_contigs.is_empty()
+    }
+}
+
+fn serialize_assigned_taxids<S: Serializer>(
+    taxids: &HashSet<NodeId>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&taxids.iter().map(|id| id.to_string()).join(";"))
+}
+
+fn serialize_assigned_contigs<S: Serializer>(
+    contigs: &HashSet<&str>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&contigs.iter().join(";"))
+}
+
 fn open_and_refine_vpf_class<'a, Tax: LabelledTaxonomy, P: AsRef<Path>>(
     tax: &'a Tax,
     rank_sym: Tax::RankSym,
-    present: HashSet<NodeId>,
+    rank_assignments: &'a RankAssignments,
     allow_different_ranks: bool,
     path: P,
-) -> Result<impl Iterator<Item = csv::Result<VpfClassRecord>> + 'a> {
+) -> Result<impl Iterator<Item = csv::Result<EnrichedVpfClassRecord<'a>>> + 'a> {
     let csv_reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .delimiter(b'\t')
         .from_path(path)?;
 
-    let result = csv_reader.into_deserialize().filter(move |record| {
-        if let Ok(record) = record {
-            let record: &VpfClassRecord = &record;
+    let result = csv_reader.into_deserialize().filter_map(move |record| {
+        match record {
+            Ok(record) => {
+                let mut enriched = EnrichedVpfClassRecord::new(record);
 
-            let mut had_candidate: u32 = 0;
+                let mut found_mismatched_ranks = false;
+                let mut found_taxids = false;
 
-            for node in tax.nodes_with_label(&record.class_name) {
-                if present.contains(&node) {
-                    if allow_different_ranks || tax.find_rank(node) == Some(rank_sym) {
-                        return true;
-                    } else {
-                        had_candidate |= 0b10;
+                for node in tax.nodes_with_label(&enriched.vpf_class_record.class_name) {
+                    found_taxids = true;
+
+                    if let Some((taxids, contigs)) = rank_assignments.lookup_rank_node(node) {
+                        if allow_different_ranks || tax.find_rank(node) == Some(rank_sym) {
+                            enriched.assigned_taxids.extend(taxids);
+                            enriched.assigned_contigs.extend(contigs.iter().map(|s| s.as_str()));
+                        } else {
+                            found_mismatched_ranks = true;
+                        }
                     }
+                }
+
+                if !found_taxids {
+                    eprintln!("Warning: No taxids found for classification {}", &enriched.vpf_class_record.class_name);
+                }
+
+                if found_mismatched_ranks {
+                    eprintln!(
+                        "Warning: Found taxids for classification {} but had mismatching ranks, skipping (use --allow-different-ranks to disable the check)",
+                        &enriched.vpf_class_record.class_name
+                    );
+                }
+
+                if enriched.has_assignments() {
+                    Some(Ok(enriched))
                 } else {
-                    had_candidate |= 0b1;
+                    None
                 }
             }
-
-            if had_candidate & 0b10 != 0 {
-                eprintln!(
-                    "Warning: Found taxids for classification {} but had mismatching ranks, skipping (use --allow-different-ranks to disable the check)",
-                    &record.class_name
-                );
-            } else if had_candidate & 0b01 == 0 {
-                eprintln!("Warning: No taxids found for classification {}", &record.class_name);
-            }
-
-            false
-
-        } else {
-            true
+            Err(err) => Some(Err(err)),
         }
     });
 
     Ok(result)
 }
 
-fn load_assignment_and_refine_vpf_class<'a, P1: AsRef<Path>, P2: 'a + AsRef<Path>, Tax: LabelledTaxonomy>(
-    tax: &'a Tax,
-    rank: &'a str,
-    include_descendants: bool,
-    assignments_path: P1,
-    allow_different_ranks: bool,
-    vpf_class_prediciton_path: P2,
-) -> Result<impl Iterator<Item = csv::Result<VpfClassRecord>> + 'a> {
-
-    let (rank_sym, (dropped, total), present) = load_assignment_found_taxids(tax, rank, include_descendants, assignments_path)
-        .context("Error collecting metagenomic assignment taxids")?;
-
-    eprintln!("Loaded assignments (dropped {} records out of {})", dropped, total);
-
-    open_and_refine_vpf_class(tax, rank_sym, present, allow_different_ranks, vpf_class_prediciton_path)
-        .context("Error reading VPF-Class output")
-}
-
-fn write_refined_output<W, I, E: 'static>(writer: W, refinement: I) -> Result<()>
+fn write_refined_output<'a, W, I, E: 'static>(writer: W, refinement: I) -> Result<()>
 where
     W: io::Write,
-    I: Iterator<Item = Result<VpfClassRecord, E>>,
+    I: IntoIterator<Item = Result<EnrichedVpfClassRecord<'a>, E>>,
     E: error::Error + Send + Sync,
 {
     let mut csv_writer = csv::WriterBuilder::new()
@@ -232,50 +295,37 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
         args.taxonomy_format
     )?;
 
-    let refinement = match &taxonomy.tree {
-        SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax) => {
-            let r = load_assignment_and_refine_vpf_class(
-                tax,
-                &rank,
-                args.include_descendants,
-                &args.metagenomic_assignment,
-                args.allow_different_ranks,
-                &args.vpf_class_prediction
-            )?;
+    with_some_taxonomy!(&taxonomy.tree, tax => {
+        let rank_sym = tax
+            .lookup_rank_sym(&rank)
+            .ok_or_else(|| anyhow::anyhow!("Rank not found in taxonomy: {rank}"))?;
 
-            Either::Left(Either::Left(r))
-        },
-        SomeTaxonomy::NcbiTaxonomyWithManyNames(tax) => {
-            let r = load_assignment_and_refine_vpf_class(
-                tax,
-                &rank,
-                args.include_descendants,
-                &args.metagenomic_assignment,
-                args.allow_different_ranks,
-                &args.vpf_class_prediction
-            )?;
+        let rank_assignments = load_rank_assignments(
+            tax,
+            rank_sym,
+            args.include_descendants,
+            &args.metagenomic_assignment,
+        )
+        .context("Error collecting metagenomic assignment taxids")?;
 
-            Either::Left(Either::Right(r))
-        },
-        SomeTaxonomy::NewickTaxonomy(tax) => {
-            let r = load_assignment_and_refine_vpf_class(
-                tax,
-                &rank,
-                args.include_descendants,
-                &args.metagenomic_assignment,
-                args.allow_different_ranks,
-                &args.vpf_class_prediction
-            )?;
+        eprintln!(
+            "Loaded assignments (dropped {} records out of {})",
+            rank_assignments.dropped_records, rank_assignments.total_records
+        );
 
-            Either::Right(r)
-        },
-    };
+        let refinement = open_and_refine_vpf_class(
+            tax,
+            rank_sym,
+            &rank_assignments,
+            args.allow_different_ranks,
+            &args.vpf_class_prediction,
+        )
+        .context("Error reading VPF-Class output")?;
 
-    if args.output == "-" {
-        write_refined_output(std::io::stdout(), refinement)?;
-    } else {
-        write_refined_output(File::create(&args.output)?, refinement)?;
-    }
+        writing_new_file_or_stdout!(&args.output, writer => {
+            write_refined_output(writer, refinement)?;
+        });
+    });
 
     Ok(())
 }

@@ -15,8 +15,14 @@ use crate::taxonomy::{
 
 #[derive(ArgEnum, Debug, Copy, Clone)]
 pub enum TaxonomyFormat {
-    NCBI,
+    Ncbi,
     Newick,
+}
+
+impl Default for TaxonomyFormat {
+    fn default() -> Self {
+        Self::Ncbi
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -34,9 +40,42 @@ pub struct PreprocessedTaxonomy {
 
 #[derive(ArgEnum, Debug, Copy, Clone)]
 pub enum PreprocessedTaxonomyFormat {
-    CBOR,
-    JSON,
+    Cbor,
+    Json,
 }
+
+impl Default for PreprocessedTaxonomyFormat {
+    fn default() -> Self {
+        Self::Cbor
+    }
+}
+
+macro_rules! with_some_taxonomy {
+    ($some_taxonomy:expr, $tax:pat => $body:expr) => {
+        match $some_taxonomy {
+            SomeTaxonomy::NcbiTaxonomyWithSingleClassNames($tax) => $body,
+            SomeTaxonomy::NcbiTaxonomyWithManyNames($tax) => $body,
+            SomeTaxonomy::NewickTaxonomy($tax) => $body,
+        }
+    }
+}
+
+macro_rules! with_some_ncbi_or_newick_taxonomy {
+    (
+        $some_taxonomy:expr,
+        ncbi: $ncbi_tax:pat => $ncbi_body:expr,
+        newick: $newick_tax:pat => $newick_body:expr
+    ) => {
+        match $some_taxonomy {
+            SomeTaxonomy::NcbiTaxonomyWithSingleClassNames($ncbi_tax) => $ncbi_body,
+            SomeTaxonomy::NcbiTaxonomyWithManyNames($ncbi_tax) => $ncbi_body,
+            SomeTaxonomy::NewickTaxonomy($newick_tax) => $newick_body,
+        }
+    }
+}
+
+pub(crate) use with_some_taxonomy;
+pub(crate) use with_some_ncbi_or_newick_taxonomy;
 
 impl PreprocessedTaxonomy {
     pub fn deserialize_with_format<P: AsRef<Path>>(
@@ -44,9 +83,9 @@ impl PreprocessedTaxonomy {
         format: PreprocessedTaxonomyFormat,
     ) -> anyhow::Result<Self> {
         match format {
-            PreprocessedTaxonomyFormat::CBOR =>
+            PreprocessedTaxonomyFormat::Cbor =>
                 Ok(serde_cbor::from_reader(File::open(path)?)?),
-            PreprocessedTaxonomyFormat::JSON =>
+            PreprocessedTaxonomyFormat::Json =>
                 Ok(serde_json::from_reader(File::open(path)?)?),
         }
     }
@@ -57,15 +96,13 @@ impl PreprocessedTaxonomy {
         format: PreprocessedTaxonomyFormat,
     ) -> anyhow::Result<()> {
         match format {
-            PreprocessedTaxonomyFormat::CBOR =>
+            PreprocessedTaxonomyFormat::Cbor =>
                 Ok(serde_cbor::to_writer(File::create(path)?, self)?),
-            PreprocessedTaxonomyFormat::JSON =>
+            PreprocessedTaxonomyFormat::Json =>
                 Ok(serde_json::to_writer(File::create(path)?, self)?),
         }
     }
 }
-
-const DEFAULT_CONTRACTION_RANKS: &'static str = "superkingdom,phylum,class,order,family,genus,species";
 
 #[derive(Args)]
 pub struct PreprocessTaxonomyArgs {
@@ -74,7 +111,7 @@ pub struct PreprocessTaxonomyArgs {
     contract: Option<Option<String>>,
 
     /// Input taxonomy format
-    #[clap(long, arg_enum, default_value_t = TaxonomyFormat::NCBI)]
+    #[clap(long, arg_enum, default_value_t)]
     input_format: TaxonomyFormat,
 
     /// Path to the input taxonomy (in the case of NCBI, specify the extracted directory of taxdump)
@@ -90,27 +127,66 @@ pub struct PreprocessTaxonomyArgs {
     newick_ranks: Option<String>,
 
     /// Output taxonomy format
-    #[clap(long, arg_enum, default_value_t = PreprocessedTaxonomyFormat::CBOR)]
+    #[clap(long, arg_enum, default_value_t)]
     output_format: PreprocessedTaxonomyFormat,
 
     /// Output taxonomy path
     output_taxonomy: String,
 }
 
+pub struct PreprocessNcbiTaxonomyArgs {
+    taxdump_path: String,
+    name_classes: Vec<String>,
+    contraction_ranks: Option<Vec<String>>
+}
+
+pub struct PreprocessNewickTaxonomyArgs {
+    path: String,
+    ranks: Vec<String>,
+    contract: bool,
+}
+
 impl PreprocessTaxonomyArgs {
-    pub fn get_contraction_ranks(&self) -> Option<Vec<&str>> {
+    pub fn get_contraction_ranks(&self) -> Option<Vec<String>> {
+        const DEFAULT_CONTRACTION_RANKS: &str = "superkingdom,phylum,class,order,family,genus,species";
+
         self.contract.as_ref().map(|ranks| {
             ranks
                 .as_deref()
                 .unwrap_or(DEFAULT_CONTRACTION_RANKS)
                 .split(',')
-                .map(str::trim)
+                .map(|rank| rank.trim().to_owned())
                 .collect()
+        })
+    }
+
+    pub fn into_ncbi_args(self) -> PreprocessNcbiTaxonomyArgs {
+        let contraction_ranks = self.get_contraction_ranks();
+
+        PreprocessNcbiTaxonomyArgs {
+            taxdump_path: self.input_taxonomy,
+            name_classes: self.ncbi_name_classes.split(',').map(ToOwned::to_owned).collect(),
+            contraction_ranks,
+        }
+    }
+
+    pub fn into_newick_args(self) -> anyhow::Result<PreprocessNewickTaxonomyArgs> {
+        let ranks = self.newick_ranks
+            .as_deref()
+            .ok_or_else(|| anyhow!("Flag --newick-ranks is required for --input-format newick"))?
+            .split(',')
+            .map(ToOwned::to_owned)
+            .collect();
+
+        Ok(PreprocessNewickTaxonomyArgs {
+            path: self.input_taxonomy,
+            ranks,
+            contract: self.contract.is_some(),
         })
     }
 }
 
-fn rank_syms_to_strings<'a, Tax: Taxonomy>(tax: &Tax, syms: &Vec<Tax::RankSym>) -> anyhow::Result<Vec<String>> {
+fn rank_syms_to_strings<Tax: Taxonomy>(tax: &Tax, syms: &[Tax::RankSym]) -> anyhow::Result<Vec<String>> {
     syms.iter()
         .map(|&sym| tax.rank_sym_str(sym).map(ToOwned::to_owned))
         .collect::<Option<Vec<String>>>()
@@ -118,11 +194,11 @@ fn rank_syms_to_strings<'a, Tax: Taxonomy>(tax: &Tax, syms: &Vec<Tax::RankSym>) 
 
 }
 
-fn contract_and_order_ranks<Names: 'static + NamesAssoc + Send>(
-    args: &PreprocessTaxonomyArgs,
+fn contract_and_order_ranks<Names: NamesAssoc + Send + 'static>(
+    args: &PreprocessNcbiTaxonomyArgs,
     tax: &mut NcbiTaxonomy<Names>,
 ) -> anyhow::Result<Option<Vec<String>>> {
-    let ordered_ranks = if let Some(ranks) = &args.get_contraction_ranks() {
+    let ordered_ranks = if let Some(ranks) = &args.contraction_ranks {
         let contraction_ranks_syms: Vec<_> = ranks.iter()
             .map(|rank| tax.lookup_rank_sym(rank).ok_or_else(|| anyhow!("Unrecognized rank {rank}")))
             .try_collect()
@@ -140,7 +216,6 @@ fn contract_and_order_ranks<Names: 'static + NamesAssoc + Send>(
         }
 
         assert!(tax.topology_health_check());
-        //todo!("Review contraction, seems broken: see 208964 before/after");
 
         rank_ordering
     } else {
@@ -167,10 +242,8 @@ fn contract_and_order_ranks<Names: 'static + NamesAssoc + Send>(
     Ok(ordered_ranks)
 }
 
-fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedTaxonomy> {
-    let mut path = PathBuf::from(&args.input_taxonomy);
-
-    let name_classes = args.ncbi_name_classes.split(',').collect_vec();
+fn preprocess_ncbi(args: &PreprocessNcbiTaxonomyArgs) -> anyhow::Result<PreprocessedTaxonomy> {
+    let mut path = PathBuf::from(&args.taxdump_path);
 
     let mut tax = {
         path.push("nodes.dmp");
@@ -184,18 +257,18 @@ fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedT
         eprintln!("Loaded merged.dmp");
 
         path.push("names.dmp");
-        let names = AllNames::load_filtered_names_dmp(&name_classes, &path)?;
+        let names = AllNames::load_filtered_names_dmp(&args.name_classes, &path)?;
         path.pop();
-        eprintln!("Loaded names.dmp with classes {name_classes:?}");
+        eprintln!("Loaded names.dmp with classes {:?}", &args.name_classes);
 
         tax.with_names(names)
     };
 
-    let ordered_ranks = contract_and_order_ranks(&args, &mut tax)?;
+    let ordered_ranks = contract_and_order_ranks(args, &mut tax)?;
 
     Ok(PreprocessedTaxonomy {
-        tree: if name_classes.len() == 1 {
-            match std::mem::take(&mut tax.names).only_of_class(name_classes[0]) {
+        tree: if args.name_classes.len() == 1 {
+            match std::mem::take(&mut tax.names).only_of_class(&args.name_classes[0]) {
                 Ok(names) => SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax.with_names(names)),
                 Err(names) => SomeTaxonomy::NcbiTaxonomyWithManyNames(tax.with_names(names)),
             }
@@ -206,24 +279,16 @@ fn preprocess_ncbi(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedT
     })
 }
 
-fn preprocess_newick(args: PreprocessTaxonomyArgs) -> anyhow::Result<PreprocessedTaxonomy> {
-    let ranks = args
-        .newick_ranks
-        .as_ref()
-        .ok_or_else(|| anyhow!("Flag --newick-ranks is required for --input-format newick"))?
-        .split(',')
-        .map(|s| s.trim().to_owned())
-        .collect_vec();
+fn preprocess_newick(args: &PreprocessNewickTaxonomyArgs) -> anyhow::Result<PreprocessedTaxonomy> {
+    let tax = NewickTaxonomy::load_newick(&args.path, args.ranks.clone())?;
 
-    let tax = NewickTaxonomy::load_newick(&args.input_taxonomy, ranks.clone())?;
-
-    if let Some(_ranks) = &args.get_contraction_ranks() {
-        anyhow!("Contraction is not supported for Newick taxonomies");
+    if args.contract {
+        anyhow::bail!("Contraction is not supported for Newick taxonomies");
     }
 
     Ok(PreprocessedTaxonomy {
         tree: SomeTaxonomy::NewickTaxonomy(tax),
-        ordered_ranks: Some(ranks),
+        ordered_ranks: Some(args.ranks.clone()),
     })
 }
 
@@ -232,8 +297,8 @@ pub fn preprocess_taxonomy(args: PreprocessTaxonomyArgs) -> anyhow::Result<()> {
     let output_format = args.output_format;
 
     let taxonomy = match args.input_format {
-        TaxonomyFormat::NCBI => preprocess_ncbi(args),
-        TaxonomyFormat::Newick => preprocess_newick(args),
+        TaxonomyFormat::Ncbi => preprocess_ncbi(&args.into_ncbi_args()),
+        TaxonomyFormat::Newick => preprocess_newick(&args.into_newick_args()?),
     }?;
 
     taxonomy.serialize_with_format(&output_taxonomy, output_format)?;

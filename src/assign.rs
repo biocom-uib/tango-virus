@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
 use std::io;
 
 use clap::Args;
-use crossbeam::channel::Sender;
+use crossbeam::channel::{Sender, Receiver};
 use csv::{StringRecord, WriterBuilder};
 use extended_rational::Rational;
 use itertools::Itertools;
@@ -11,9 +10,10 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 use serde::{Serialize, Deserialize};
 
 use crate::preprocess_blastout;
-use crate::preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy};
+use crate::preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy, with_some_ncbi_or_newick_taxonomy, with_some_taxonomy};
 use crate::taxonomy::formats::ncbi::{NcbiTaxonomy, NamesAssoc};
 use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
+use crate::util::writing_new_file_or_stdout;
 
 
 #[derive(Clone, Debug, Default)]
@@ -145,17 +145,16 @@ fn assign_reads(ann_map: &TaxonomyAnnotations, q: Rational) -> (Vec<NodeId>, Rat
 
 #[derive(Args)]
 pub struct AssignArgs {
-    #[clap(long, arg_enum, default_value_t = PreprocessedTaxonomyFormat::CBOR)]
+    #[clap(long, arg_enum, default_value_t)]
     taxonomy_format: PreprocessedTaxonomyFormat,
 
     /// Path to the preprocessed taxonomy (presumably from preprocess-taxonomy)
     preprocessed_taxonomy: String,
 
     /// Path to the preprocessed reads file (presumably from preprocess-blastout). It should be a
-    /// file containing the parsed output of a mapping program, in the format
+    /// file containing the parsed output of a mapping program, in the (tab-separated) format
     ///
-    /// [read_id]	[species_id_1];...;[species_id_n]
-    ///          (tab)
+    /// [read_id]    [species_id_1];...;[species_id_n]
     preprocessed_reads: String,
 
     /// Output path (use '-' for STDOUT)
@@ -296,7 +295,7 @@ fn ncbi_taxonomy_lookup_taxid_leaf<'a, Names: 'static + NamesAssoc + Send>(
     }
 }
 
-fn labelled_taxonomy_lookup_taxid_leaf<'a, Tax>(tax: &'a Tax) -> impl Fn(&str) -> Vec<NodeId> + 'a
+fn labelled_taxonomy_lookup_taxid_leaf<Tax>(tax: &Tax) -> impl Fn(&str) -> Vec<NodeId> + '_
 where
     Tax: LabelledTaxonomy,
 {
@@ -324,66 +323,28 @@ fn load_reads_and_produce_assignments(
 
     let header = peek_reads_csv_header(&mut csv_reader)?;
 
-    match &taxonomy.tree {
-        SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax) => {
-            if header.subjects_id_col == preprocess_blastout::fields::STAXID.0 {
-                produce_assignments(
-                    csv_reader,
-                    &header,
-                    tax,
-                    ncbi_taxonomy_lookup_taxid_leaf(tax),
-                    q,
-                    sender,
-                )?;
-            } else if header.subjects_id_col == preprocess_blastout::fields::SSCINAME.0 {
-                produce_assignments(
-                    csv_reader,
-                    &header,
-                    tax,
-                    labelled_taxonomy_lookup_taxid_leaf(tax),
-                    q,
-                    sender,
-                )?;
-            } else {
-                anyhow::bail!("Unable to map read subject ID's to NCBI Taxonomy ID's")
-            }
-        }
-        SomeTaxonomy::NcbiTaxonomyWithManyNames(tax) => {
-            if header.subjects_id_col == preprocess_blastout::fields::STAXID.0 {
-                produce_assignments(
-                    csv_reader,
-                    &header,
-                    tax,
-                    ncbi_taxonomy_lookup_taxid_leaf(tax),
-                    q,
-                    sender,
-                )?;
-            } else if header.subjects_id_col == preprocess_blastout::fields::SSCINAME.0 {
-                produce_assignments(
-                    csv_reader,
-                    &header,
-                    tax,
-                    labelled_taxonomy_lookup_taxid_leaf(tax),
-                    q,
-                    sender,
-                )?;
-            } else {
-                anyhow::bail!("Unable to map read subject ID's to NCBI Taxonomy ID's")
-            }
-        },
-        SomeTaxonomy::NewickTaxonomy(tax) => {
-            eprintln!("Warning: Unable to verify Newick taxonomy labels, check that subject ID's are correctly matched");
-
-            produce_assignments(
-                csv_reader,
-                &header,
-                tax,
-                labelled_taxonomy_lookup_taxid_leaf(tax),
-                q,
-                sender,
-            )?;
+    macro_rules! produce_assignments_with {
+        ($tax:expr, $lookup_taxid:expr) => {
+            produce_assignments(csv_reader, &header, $tax, $lookup_taxid, q, sender)
         }
     }
+
+    with_some_ncbi_or_newick_taxonomy!(&taxonomy.tree,
+        ncbi: tax => {
+            if header.subjects_id_col == preprocess_blastout::fields::STAXID.0 {
+                produce_assignments_with!(tax, ncbi_taxonomy_lookup_taxid_leaf(tax))?;
+            } else if header.subjects_id_col == preprocess_blastout::fields::SSCINAME.0 {
+                produce_assignments_with!(tax, labelled_taxonomy_lookup_taxid_leaf(tax))?;
+            } else {
+                anyhow::bail!("Unable to map read subject ID's ({}) to NCBI Taxonomy ID's", &header.subjects_id_col)
+            }
+        },
+        newick: tax => {
+            eprintln!("Warning: Unable to ensure that Newick taxonomy labels match the search subject ID key ({})", &header.subjects_id_col);
+
+            produce_assignments_with!(tax, labelled_taxonomy_lookup_taxid_leaf(tax))?;
+        }
+    );
 
     Ok(())
 }
@@ -397,83 +358,52 @@ pub struct AssignmentRecord {
     pub penalty: f32,
 }
 
-fn write_assignments<W, Tax, I>(writer: W, tax: &Tax, records: I) -> anyhow::Result<()>
-where
-    W: io::Write,
-    Tax: LabelledTaxonomy,
-    I: IntoIterator<Item = QueryAssignments>,
-{
-    let mut csv_writer = WriterBuilder::new()
-        .delimiter(b'\t')
-        .has_headers(true)
-        .from_writer(writer);
-
-    eprintln!("");
-
-    let mut count = 0;
-
-    for record in records {
-        for node in record.assigned_nodes {
-            let assigned_name = tax.labels_of(node).next().unwrap_or_else(|| {
-                eprintln!("\nWarning: No label found for taxid {node}");
-                ""
-            });
-
-            let rank = tax
-                .find_rank(node)
-                .and_then(|rank_sym| tax.rank_sym_str(rank_sym))
-                .unwrap_or("")
-                .to_owned();
-
-            let penalty = record.penalty;
-
-            csv_writer.serialize(AssignmentRecord {
-                query_id: record.query_id.clone(),
-                assigned_taxid: node.0,
-                assigned_name: assigned_name.to_owned(),
-                assigned_rank: rank,
-                penalty,
-            })?;
-        }
-
-        count += 1;
-        eprint!("\rProcessed {count} query sequences");
-    }
-
-    Ok(())
-}
-
-fn open_output_and_write_assignments<I>(
+fn write_assignments(
     output: &str,
     taxonomy: &PreprocessedTaxonomy,
-    records: I,
+    assignments: Receiver<QueryAssignments>,
 ) -> anyhow::Result<()>
-where
-    I: IntoIterator<Item = QueryAssignments>,
 {
-    match &taxonomy.tree {
-        SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax) => {
-            if output == "-" {
-                write_assignments(io::stdout(), tax, records)?;
-            } else {
-                write_assignments(File::create(output)?, tax, records)?;
-            };
-        }
-        SomeTaxonomy::NcbiTaxonomyWithManyNames(tax) => {
-            if output == "-" {
-                write_assignments(io::stdout(), tax, records)?;
-            } else {
-                write_assignments(File::create(output)?, tax, records)?;
-            };
-        }
-        SomeTaxonomy::NewickTaxonomy(tax) => {
-            if output == "-" {
-                write_assignments(io::stdout(), tax, records)?;
-            } else {
-                write_assignments(File::create(output)?, tax, records)?;
-            };
-        }
-    }
+    with_some_taxonomy!(&taxonomy.tree, tax => {
+        writing_new_file_or_stdout!(output, writer => {
+            let mut csv_writer = WriterBuilder::new()
+                .delimiter(b'\t')
+                .has_headers(true)
+                .from_writer(writer);
+
+            eprintln!("");
+
+            let mut count = 0;
+
+            for record in assignments {
+                for node in record.assigned_nodes {
+                    let assigned_name = tax.labels_of(node).next().unwrap_or_else(|| {
+                        eprintln!("\nWarning: No label found for taxid {node}");
+                        ""
+                    });
+
+                    let rank = tax
+                        .find_rank(node)
+                        .and_then(|rank_sym| tax.rank_sym_str(rank_sym))
+                        .unwrap_or("")
+                        .to_owned();
+
+                    let penalty = record.penalty;
+
+                    csv_writer.serialize(AssignmentRecord {
+                        query_id: record.query_id.clone(),
+                        assigned_taxid: node.0,
+                        assigned_name: assigned_name.to_owned(),
+                        assigned_rank: rank,
+                        penalty,
+                    })?;
+                }
+
+                count += 1;
+                eprint!("\rProcessed {count} query sequences");
+            }
+        });
+    });
 
     Ok(())
 }
@@ -492,7 +422,7 @@ pub fn assign(args: AssignArgs) -> anyhow::Result<()> {
 
     let (rl, rr) = rayon::join(
         move || load_reads_and_produce_assignments(&args.preprocessed_reads, taxonomy, q, sender),
-        move || open_output_and_write_assignments(&args.output, taxonomy, receiver),
+        move || write_assignments(&args.output, taxonomy, receiver),
     );
 
     rl?;

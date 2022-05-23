@@ -177,7 +177,7 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
 
     type Children<'a> = <GenericTaxonomy as Taxonomy>::Children<'a>;
 
-    fn iter_children<'a>(&'a self, node: TaxId) -> Self::Children<'a> {
+    fn iter_children(&self, node: TaxId) -> Self::Children<'_> {
         self.tree.iter_children(node)
     }
 
@@ -201,7 +201,7 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
 
     type NodeRanks<'a> = <GenericTaxonomy as Taxonomy>::NodeRanks<'a>;
 
-    fn node_ranks<'a>(&'a self) -> Self::NodeRanks<'a> {
+    fn node_ranks(&self) -> Self::NodeRanks<'_> {
         self.tree.node_ranks()
     }
 }
@@ -212,7 +212,7 @@ impl<Names: NamesAssoc + Send + 'static> LabelledTaxonomy for NcbiTaxonomy<Names
         Names::NamesLookupIter<'a>
     >;
 
-    fn labels_of<'a>(&'a self, node: NodeId) -> Self::Labels<'a> {
+    fn labels_of(&self, node: NodeId) -> Self::Labels<'_> {
         if let Some(result) = self.names.lookup_names(node) {
             Either::Right(Names::iter_lookup_names(result))
         } else {
@@ -225,11 +225,10 @@ impl<Names: NamesAssoc + Send + 'static> LabelledTaxonomy for NcbiTaxonomy<Names
     fn nodes_with_label<'a>(&'a self, label: &'a str) -> Self::NodesWithLabel<'a> {
         NodesWithLabel {
             tax: self,
-            iter: if let Some(result) = self.names.lookup_taxids(label) {
-                Some(Names::iter_lookup_taxids(result))
-            } else {
-                None
-            },
+            iter: self
+                .names
+                .lookup_taxids(label)
+                .map(Names::iter_lookup_taxids),
         }
     }
 }
@@ -252,22 +251,11 @@ impl<'a, Names: NamesAssoc> Iterator for NodesWithLabel<'a, Names> {
 impl<Names: NamesAssoc + Send + 'static> TaxonomyMut for NcbiTaxonomy<Names> {
     type UnderlyingTopology = <GenericTaxonomy as TaxonomyMut>::UnderlyingTopology;
 
-    fn replace_topology_with<'a, Replacer>(&'a mut self, replacer: Replacer) -> Replacer::Result
+    fn replace_topology_with<Replacer>(&mut self, replacer: Replacer) -> Replacer::Result
     where
         Replacer: TopologyReplacer<Self::UnderlyingTopology>
     {
         self.tree.replace_topology_with(replacer)
-
-        //let known_taxid = |taxid| self.tree.has_node(taxid);
-
-        //rayon::join(
-        //    || self.names.forget_taxids(&known_taxid),
-        //    || {
-        //        if let Some(merged) = &mut self.merged_taxids {
-        //            merged.retain(|_old_taxid, new_taxid| known_taxid(*new_taxid));
-        //        }
-        //    },
-        //);
     }
 
     fn contract(&mut self, new_ranks: std::collections::HashSet<Self::RankSym>) -> ContractedNodes

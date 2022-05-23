@@ -1,16 +1,17 @@
 #![feature(
-    associated_type_bounds,
     associated_type_defaults,
     generic_associated_types,
+    hash_set_entry,
     io_read_to_string,
     iterator_try_reduce,
-    label_break_value,
     never_type,
 )]
 
 use clap::{Parser, Subcommand};
 
 pub mod taxonomy;
+
+pub(crate) mod util;
 
 mod preprocess_blastout;
 mod preprocess_taxonomy;

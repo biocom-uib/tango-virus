@@ -123,7 +123,7 @@ impl Taxonomy for GenericTaxonomy {
 
     type Children<'a> = std::iter::Copied<std::slice::Iter<'a, NodeId>>;
 
-    fn iter_children<'a>(&'a self, node: NodeId) -> Self::Children<'a> {
+    fn iter_children(&self, node: NodeId) -> Self::Children<'_> {
         self.children_lookup
             .get(&node)
             .map(|v| v.as_slice())
@@ -160,7 +160,7 @@ impl Taxonomy for GenericTaxonomy {
 
     type NodeRanks<'a> = CopiedRanksTupleIter<hash_map::Iter<'a, NodeId, u32>>;
 
-    fn node_ranks<'a>(&'a self) -> Self::NodeRanks<'a> {
+    fn node_ranks(&self) -> Self::NodeRanks<'_> {
         CopiedRanksTupleIter {
             inner: self.ranks.ranks.iter()
         }
@@ -198,7 +198,7 @@ impl TaxonomyMut for GenericTaxonomy {
 
             children_lookup
                 .entry(parent)
-                .or_insert_with(|| Vec::new())
+                .or_insert_with(Vec::new)
                 .push(child);
         });
 
@@ -262,7 +262,7 @@ impl GenericTaxonomyBuilder {
             },
         }
 
-        self.children_lookup.entry(parent).or_insert_with(|| Vec::new()).push(child);
+        self.children_lookup.entry(parent).or_insert_with(Vec::new).push(child);
 
         Ok(())
     }

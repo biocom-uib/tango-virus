@@ -37,7 +37,7 @@ pub trait Taxonomy: Sized {
     where
         Self: 'a;
 
-    fn iter_children<'a>(&'a self, node: NodeId) -> Self::Children<'a>;
+    fn iter_children(&self, node: NodeId) -> Self::Children<'_>;
 
     type RankSym: Eq + Copy + Debug + Hash;
 
@@ -55,7 +55,7 @@ pub trait Taxonomy: Sized {
     where
         Self: 'a;
 
-    fn node_ranks<'a>(&'a self) -> Self::NodeRanks<'a>;
+    fn node_ranks(&self) -> Self::NodeRanks<'_>;
 
     fn rank_ordering(&self) -> Result<Vec<Self::RankSym>, Loop<Self::RankSym>> {
         let rank_graph = self
@@ -77,7 +77,7 @@ pub trait Taxonomy: Sized {
         util::topsort::<Self::RankSym, HashSet<Self::RankSym>>(&rank_graph)
     }
 
-    fn ancestors<'a>(&'a self, node: NodeId) -> AncestorsIter<'a, Self> {
+    fn ancestors(&self, node: NodeId) -> AncestorsIter<'_, Self> {
         AncestorsIter {
             taxo: self,
             current: node,
@@ -91,8 +91,7 @@ pub trait Taxonomy: Sized {
         } else if self.has_uniform_depths().is_some() && self.is_leaf(node1) && self.is_leaf(node2) {
             self.ancestors(node1)
                 .zip(self.ancestors(node2))
-                .skip_while(|(p1, p2)| p1 != p2)
-                .next()
+                .find(|(p1, p2)| p1 == p2)
                 .map(|(p, _)| p)
 
         } else {
@@ -106,11 +105,11 @@ pub trait Taxonomy: Sized {
         }
     }
 
-    fn preorder_edges<'a>(&'a self, node: NodeId) -> PreOrderEdgesIter<'a, Self> {
+    fn preorder_edges(&self, node: NodeId) -> PreOrderEdgesIter<'_, Self> {
         PreOrderEdgesIter::new(self, node)
     }
 
-    fn postorder_descendants<'a>(&'a self, node: NodeId) -> PostOrderIter<'a, Self> {
+    fn postorder_descendants(&self, node: NodeId) -> PostOrderIter<'_, Self> {
         PostOrderIter::new(self, node)
     }
 }
@@ -119,7 +118,7 @@ pub trait LabelledTaxonomy : Taxonomy {
     type Labels<'a>: Iterator<Item = &'a str>
         where Self: 'a;
 
-    fn labels_of<'a>(&'a self, node: NodeId) -> Self::Labels<'a>;
+    fn labels_of(&self, node: NodeId) -> Self::Labels<'_>;
 
     fn some_label_of(&self, node: NodeId) -> Option<&str> {
         self.labels_of(node).next()

@@ -1,5 +1,3 @@
-use std::fs::File;
-
 use anyhow::Context;
 use clap::{ArgEnum, Args};
 use itertools::Itertools;
@@ -9,62 +7,64 @@ use polars::lazy::prelude::LazyCsvReader;
 use polars::prelude::*;
 use regex::Regex;
 
+use crate::util::writing_new_file_or_stdout;
+
 pub mod fields {
     use std::collections::HashMap;
 
     use lazy_static::lazy_static;
     use polars::datatypes::DataType;
 
-    pub const QSEQID: (&'static str, DataType)      = ("qseqid",      DataType::Utf8);
-    pub const QGI: (&'static str, DataType)         = ("qgi",         DataType::Utf8);
-    pub const QACC: (&'static str, DataType)        = ("qacc",        DataType::Utf8);
-    pub const QACCVER: (&'static str, DataType)     = ("qaccver",     DataType::Utf8);
-    pub const QLEN: (&'static str, DataType)        = ("qlen",        DataType::Int32);
-    pub const SSEQID: (&'static str, DataType)      = ("sseqid",      DataType::Utf8);
-    pub const SALLSEQID: (&'static str, DataType)   = ("sallseqid",   DataType::Utf8);
-    pub const SGI: (&'static str, DataType)         = ("sgi",         DataType::Utf8);
-    pub const SALLGI: (&'static str, DataType)      = ("sallgi",      DataType::Utf8);
-    pub const SACC: (&'static str, DataType)        = ("sacc",        DataType::Utf8);
-    pub const SACCVER: (&'static str, DataType)     = ("saccver",     DataType::Utf8);
-    pub const SALLACC: (&'static str, DataType)     = ("sallacc",     DataType::Utf8);
-    pub const SLEN: (&'static str, DataType)        = ("slen",        DataType::Int32);
-    pub const QSTART: (&'static str, DataType)      = ("qstart",      DataType::Int32);
-    pub const QEND: (&'static str, DataType)        = ("qend",        DataType::Int32);
-    pub const SSTART: (&'static str, DataType)      = ("sstart",      DataType::Int32);
-    pub const SEND: (&'static str, DataType)        = ("send",        DataType::Int32);
-    pub const QSEQ: (&'static str, DataType)        = ("qseq",        DataType::Utf8);
-    pub const SSEQ: (&'static str, DataType)        = ("sseq",        DataType::Utf8);
-    pub const EVALUE: (&'static str, DataType)      = ("evalue",      DataType::Float32);
-    pub const BITSCORE: (&'static str, DataType)    = ("bitscore",    DataType::Float32);
-    pub const SCORE: (&'static str, DataType)       = ("score",       DataType::Float32);
-    pub const LENGTH: (&'static str, DataType)      = ("length",      DataType::Int32);
-    pub const PIDENT: (&'static str, DataType)      = ("pident",      DataType::Float32);
-    pub const NIDENT: (&'static str, DataType)      = ("nident",      DataType::Int32);
-    pub const MISMATCH: (&'static str, DataType)    = ("mismatch",    DataType::Int32);
-    pub const POSITIVE: (&'static str, DataType)    = ("positive",    DataType::Int32);
-    pub const GAPOPEN: (&'static str, DataType)     = ("gapopen",     DataType::Int32);
-    pub const GAPS: (&'static str, DataType)        = ("gaps",        DataType::Int32);
-    pub const PPOS: (&'static str, DataType)        = ("ppos",        DataType::Float32);
-    pub const FRAMES: (&'static str, DataType)      = ("frames",      DataType::Utf8);
-    pub const QFRAME: (&'static str, DataType)      = ("qframe",      DataType::Utf8);
-    pub const SFRAME: (&'static str, DataType)      = ("sframe",      DataType::Utf8);
-    pub const BTOP: (&'static str, DataType)        = ("btop",        DataType::Utf8);
-    pub const STAXID: (&'static str, DataType)      = ("staxid",      DataType::Int64);
-    pub const SSCINAME: (&'static str, DataType)    = ("ssciname",    DataType::Utf8);
-    pub const SCOMNAME: (&'static str, DataType)    = ("scomname",    DataType::Utf8);
-    pub const SBLASTNAME: (&'static str, DataType)  = ("sblastname",  DataType::Utf8);
-    pub const SSKINGDOM: (&'static str, DataType)   = ("sskingdom",   DataType::Utf8);
-    pub const STAXIDS: (&'static str, DataType)     = ("staxids",     DataType::Utf8);
-    pub const SSCINAMES: (&'static str, DataType)   = ("sscinames",   DataType::Utf8);
-    pub const SCOMNAMES: (&'static str, DataType)   = ("scomnames",   DataType::Utf8);
-    pub const SBLASTNAMES: (&'static str, DataType) = ("sblastnames", DataType::Utf8);
-    pub const SSKINGDOMS: (&'static str, DataType)  = ("sskingdoms",  DataType::Utf8);
-    pub const STITLE: (&'static str, DataType)      = ("stitle",      DataType::Utf8);
-    pub const SALLTITLES: (&'static str, DataType)  = ("salltitles",  DataType::Utf8);
-    pub const SSTRAND: (&'static str, DataType)     = ("sstrand",     DataType::Utf8);
-    pub const QCOVS: (&'static str, DataType)       = ("qcovs",       DataType::Float32);
-    pub const QCOVHSP: (&'static str, DataType)     = ("qcovhsp",     DataType::Float32);
-    pub const QCOVUS: (&'static str, DataType)      = ("qcovus",      DataType::Float32);
+    pub const QSEQID: (&str, DataType)      = ("qseqid",      DataType::Utf8);
+    pub const QGI: (&str, DataType)         = ("qgi",         DataType::Utf8);
+    pub const QACC: (&str, DataType)        = ("qacc",        DataType::Utf8);
+    pub const QACCVER: (&str, DataType)     = ("qaccver",     DataType::Utf8);
+    pub const QLEN: (&str, DataType)        = ("qlen",        DataType::Int32);
+    pub const SSEQID: (&str, DataType)      = ("sseqid",      DataType::Utf8);
+    pub const SALLSEQID: (&str, DataType)   = ("sallseqid",   DataType::Utf8);
+    pub const SGI: (&str, DataType)         = ("sgi",         DataType::Utf8);
+    pub const SALLGI: (&str, DataType)      = ("sallgi",      DataType::Utf8);
+    pub const SACC: (&str, DataType)        = ("sacc",        DataType::Utf8);
+    pub const SACCVER: (&str, DataType)     = ("saccver",     DataType::Utf8);
+    pub const SALLACC: (&str, DataType)     = ("sallacc",     DataType::Utf8);
+    pub const SLEN: (&str, DataType)        = ("slen",        DataType::Int32);
+    pub const QSTART: (&str, DataType)      = ("qstart",      DataType::Int32);
+    pub const QEND: (&str, DataType)        = ("qend",        DataType::Int32);
+    pub const SSTART: (&str, DataType)      = ("sstart",      DataType::Int32);
+    pub const SEND: (&str, DataType)        = ("send",        DataType::Int32);
+    pub const QSEQ: (&str, DataType)        = ("qseq",        DataType::Utf8);
+    pub const SSEQ: (&str, DataType)        = ("sseq",        DataType::Utf8);
+    pub const EVALUE: (&str, DataType)      = ("evalue",      DataType::Float32);
+    pub const BITSCORE: (&str, DataType)    = ("bitscore",    DataType::Float32);
+    pub const SCORE: (&str, DataType)       = ("score",       DataType::Float32);
+    pub const LENGTH: (&str, DataType)      = ("length",      DataType::Int32);
+    pub const PIDENT: (&str, DataType)      = ("pident",      DataType::Float32);
+    pub const NIDENT: (&str, DataType)      = ("nident",      DataType::Int32);
+    pub const MISMATCH: (&str, DataType)    = ("mismatch",    DataType::Int32);
+    pub const POSITIVE: (&str, DataType)    = ("positive",    DataType::Int32);
+    pub const GAPOPEN: (&str, DataType)     = ("gapopen",     DataType::Int32);
+    pub const GAPS: (&str, DataType)        = ("gaps",        DataType::Int32);
+    pub const PPOS: (&str, DataType)        = ("ppos",        DataType::Float32);
+    pub const FRAMES: (&str, DataType)      = ("frames",      DataType::Utf8);
+    pub const QFRAME: (&str, DataType)      = ("qframe",      DataType::Utf8);
+    pub const SFRAME: (&str, DataType)      = ("sframe",      DataType::Utf8);
+    pub const BTOP: (&str, DataType)        = ("btop",        DataType::Utf8);
+    pub const STAXID: (&str, DataType)      = ("staxid",      DataType::Int64);
+    pub const SSCINAME: (&str, DataType)    = ("ssciname",    DataType::Utf8);
+    pub const SCOMNAME: (&str, DataType)    = ("scomname",    DataType::Utf8);
+    pub const SBLASTNAME: (&str, DataType)  = ("sblastname",  DataType::Utf8);
+    pub const SSKINGDOM: (&str, DataType)   = ("sskingdom",   DataType::Utf8);
+    pub const STAXIDS: (&str, DataType)     = ("staxids",     DataType::Utf8);
+    pub const SSCINAMES: (&str, DataType)   = ("sscinames",   DataType::Utf8);
+    pub const SCOMNAMES: (&str, DataType)   = ("scomnames",   DataType::Utf8);
+    pub const SBLASTNAMES: (&str, DataType) = ("sblastnames", DataType::Utf8);
+    pub const SSKINGDOMS: (&str, DataType)  = ("sskingdoms",  DataType::Utf8);
+    pub const STITLE: (&str, DataType)      = ("stitle",      DataType::Utf8);
+    pub const SALLTITLES: (&str, DataType)  = ("salltitles",  DataType::Utf8);
+    pub const SSTRAND: (&str, DataType)     = ("sstrand",     DataType::Utf8);
+    pub const QCOVS: (&str, DataType)       = ("qcovs",       DataType::Float32);
+    pub const QCOVHSP: (&str, DataType)     = ("qcovhsp",     DataType::Float32);
+    pub const QCOVUS: (&str, DataType)      = ("qcovus",      DataType::Float32);
 
     lazy_static! {
         pub static ref FIELD_TYPES: HashMap<&'static str, DataType> = HashMap::from([
@@ -121,7 +121,7 @@ pub mod fields {
         ]);
     }
 
-    pub const DEFAULT_BLASTN_COLUMNS: &'static [&'static str] = &[
+    pub const DEFAULT_BLASTN_COLUMNS: &[&str] = &[
         QACCVER.0, SACCVER.0, PIDENT.0, LENGTH.0, MISMATCH.0, GAPOPEN.0, QSTART.0, QEND.0,
         SSTART.0, SEND.0,
     ];
@@ -204,7 +204,7 @@ fn parse_blast_outfmt(fmt: &str) -> anyhow::Result<BlastOutFmt> {
 
     fn parse_blast_outfmt_6_or_7(mut fmt_args: &[&str]) -> anyhow::Result<(u8, Vec<String>)> {
         let delim = if let Some(delim_str) = fmt_args.first().and_then(|s| s.strip_prefix("delim=")) {
-            if let Some(delim_chr) = delim_str.chars().exactly_one().ok() {
+            if let Ok(delim_chr) = delim_str.chars().exactly_one() {
                 fmt_args = &fmt_args[1..];
                 delim_chr as u8
             } else {
@@ -315,7 +315,7 @@ fn load_blastout(
         let mut n_ignored = 0;
 
         for present in present_columns {
-            if present.starts_with("_") {
+            if present.starts_with('_') {
                 schema.with_column(format!("_{n_ignored}"), DataType::Utf8);
                 n_ignored += 1;
 
@@ -344,7 +344,7 @@ fn load_blastout(
     let wanted_columns = wanted_columns.unwrap_or_else(|| {
         present_columns
             .iter()
-            .filter(|p| !p.starts_with("_"))
+            .filter(|p| !p.starts_with('_'))
             .cloned()
             .collect()
     });
@@ -414,7 +414,7 @@ pub fn preprocess_blastout(args: PreprocessBlastOutArgs) -> anyhow::Result<()> {
 
         eprintln!("Loaded BLAST+ output with schema {:?}", df.schema());
 
-        let filters: Vec<_> = args.filter.iter().map(|filter| parse_filter(&filter)).try_collect()?;
+        let filters: Vec<_> = args.filter.iter().map(|filter| parse_filter(filter)).try_collect()?;
         apply_filters(df, filters)
     };
 
@@ -438,15 +438,11 @@ pub fn preprocess_blastout(args: PreprocessBlastOutArgs) -> anyhow::Result<()> {
         }
     }
 
-    if args.output == "-" {
-        CsvWriter::new(std::io::stdout())
+    writing_new_file_or_stdout!(&args.output, writer => {
+        CsvWriter::new(writer)
             .with_delimiter(b'\t')
             .finish(&mut grouped)?;
-    } else {
-        CsvWriter::new(File::create(&args.output)?)
-            .with_delimiter(b'\t')
-            .finish(&mut grouped)?;
-    }
+    });
 
     Ok(())
 }

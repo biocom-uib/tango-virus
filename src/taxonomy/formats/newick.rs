@@ -54,7 +54,7 @@ impl NewickTaxonomy {
 
             label_lookup
                 .entry(label)
-                .or_insert_with(|| Vec::new())
+                .or_insert_with(Vec::new)
                 .push(node_id);
 
             depths.push(depth);
@@ -156,7 +156,7 @@ impl Taxonomy for NewickTaxonomy {
 
     type Children<'a> = std::iter::Copied<std::slice::Iter<'a, NodeId>>;
 
-    fn iter_children<'a>(&'a self, node: NodeId) -> Self::Children<'a> {
+    fn iter_children(&self, node: NodeId) -> Self::Children<'_> {
         self.children_lookup[node.0].iter().copied()
     }
 
@@ -176,7 +176,7 @@ impl Taxonomy for NewickTaxonomy {
 
     type NodeRanks<'a> = EnumerateAsNodeId<iter::Copied<slice::Iter<'a, Self::RankSym>>>;
 
-    fn node_ranks<'a>(&'a self) -> Self::NodeRanks<'a> {
+    fn node_ranks(&self) -> Self::NodeRanks<'_> {
         EnumerateAsNodeId {
             inner: self.depths.iter().copied().enumerate(),
         }
@@ -186,7 +186,7 @@ impl Taxonomy for NewickTaxonomy {
 impl LabelledTaxonomy for NewickTaxonomy {
     type Labels<'a> = std::option::IntoIter<&'a str>;
 
-    fn labels_of<'a>(&'a self, node: NodeId) -> Self::Labels<'a> {
+    fn labels_of(&self, node: NodeId) -> Self::Labels<'_> {
         self.labels.get(node.0).map(String::as_str).into_iter()
     }
 
@@ -218,7 +218,7 @@ pub fn read_newick_simple_tree<R: Read>(mut reader: R) -> Result<SimpleTree, New
     let tree: SimpleTree = newick::from_newick(&contents)
         .map_err(|err| NewickLoadError::ParseError(Box::new(err.to_owned())))?;
 
-    Ok(tree.into())
+    Ok(tree)
 }
 
 pub fn write_newick_simple_tree<W: Write>(

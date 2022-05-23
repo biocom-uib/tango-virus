@@ -45,9 +45,12 @@ impl AllNames {
             name_to_taxids: HashMap::new(),
         };
 
-        this.fill_from(names_dmp, |class| classes.iter().any(|c| c.as_ref() == class))?;
+        this.fill_from(names_dmp, |class| {
+            classes.iter().any(|c| c.as_ref() == class)
+        })?;
 
-        let order: HashMap<NameClassSymbol, usize>  = classes.into_iter()
+        let order: HashMap<NameClassSymbol, usize> = classes
+            .iter()
             .enumerate()
             .map(|(i, s)| (this.name_classes.get_or_intern(s.as_ref()).into(), i))
             .collect();
@@ -74,12 +77,10 @@ impl AllNames {
             .taxid_to_names
             .into_iter()
             .filter_map(|(taxid, names)| {
-                let single_name = names.into_iter()
-                    .filter(|(class, _)| *class == single_class)
-                    .map(|(_, name)| name)
-                    .next()?;
-
-                Some((taxid, single_name))
+                names
+                    .into_iter()
+                    .find(|(class, _)| *class == single_class)
+                    .map(|(_, single_name)| (taxid, single_name))
             })
             .collect();
 
@@ -132,7 +133,7 @@ impl SingleClassNames {
     }
 }
 
-#[derive(Copy, Clone, Deserialize, Serialize)]
+#[derive(Copy, Clone, Default, Deserialize, Serialize)]
 pub struct NoNames {}
 
 impl NoNames {
@@ -147,16 +148,16 @@ pub trait NamesAssoc {
     fn forget_taxids<Keep>(&mut self, keep: Keep) where Keep: FnMut(TaxId) -> bool;
 
     type NameLookup;
-    fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup>;
+    fn lookup_names(&self, taxid: TaxId) -> Option<&Self::NameLookup>;
 
     type NamesLookupIter<'a>: Iterator<Item = &'a str> + 'a;
-    fn iter_lookup_names<'a>(lookup: &'a Self::NameLookup) -> Self::NamesLookupIter<'a>;
+    fn iter_lookup_names(lookup: &Self::NameLookup) -> Self::NamesLookupIter<'_>;
 
     type TaxIdsLookup;
-    fn lookup_taxids<'a>(&'a self, name: &str) -> Option<&'a Self::TaxIdsLookup>;
+    fn lookup_taxids(&self, name: &str) -> Option<&Self::TaxIdsLookup>;
 
     type TaxIdsLookupIter<'a>: Iterator<Item = TaxId> + 'a;
-    fn iter_lookup_taxids<'a>(lookup: &'a Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'a>;
+    fn iter_lookup_taxids(lookup: &Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'_>;
 
     fn fill_from<P, F>(&mut self, names_dmp: P, class_filter: F) -> Result<(), DmpError>
     where
@@ -219,12 +220,12 @@ impl NamesAssoc for AllNames {
     }
 
     type NameLookup = Vec<(NameClassSymbol, String)>;
-    fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup> {
+    fn lookup_names(&self, taxid: TaxId) -> Option<&Self::NameLookup> {
         self.taxid_to_names.get(&taxid)
     }
 
     type NamesLookupIter<'a> = IterStrSnd<slice::Iter<'a, (NameClassSymbol, String)>>;
-    fn iter_lookup_names<'a>(lookup: &'a Self::NameLookup) -> Self::NamesLookupIter<'a> {
+    fn iter_lookup_names(lookup: &Self::NameLookup) -> Self::NamesLookupIter<'_> {
         IterStrSnd(lookup.iter())
     }
 
@@ -234,7 +235,7 @@ impl NamesAssoc for AllNames {
     }
 
     type TaxIdsLookupIter<'a> = IterCopySnd<slice::Iter<'a, (NameClassSymbol, NodeId)>>;
-    fn iter_lookup_taxids<'a>(lookup: &'a Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'a> {
+    fn iter_lookup_taxids(lookup: &Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'_> {
         IterCopySnd(lookup.iter())
     }
 }
@@ -264,7 +265,7 @@ impl NamesAssoc for SingleClassNames {
         if name_class == self.name_class {
             self.taxid_to_name
                 .entry(taxid)
-                .or_insert_with(|| if unique_name.is_empty() { name } else { unique_name }.to_owned());
+                .or_insert_with(|| if name.is_empty() { unique_name } else { name }.to_owned());
 
             self.name_to_taxids
                 .entry(name.to_owned())
@@ -283,12 +284,12 @@ impl NamesAssoc for SingleClassNames {
     }
 
     type NameLookup = String;
-    fn lookup_names<'a>(&'a self, taxid: TaxId) -> Option<&'a Self::NameLookup> {
+    fn lookup_names(&self, taxid: TaxId) -> Option<&Self::NameLookup> {
         self.taxid_to_name.get(&taxid)
     }
 
     type NamesLookupIter<'a> = std::iter::Once<&'a str>;
-    fn iter_lookup_names<'a>(lookup: &'a Self::NameLookup) -> Self::NamesLookupIter<'a> {
+    fn iter_lookup_names(lookup: &Self::NameLookup) -> Self::NamesLookupIter<'_> {
         std::iter::once(&*lookup)
     }
 
@@ -298,7 +299,7 @@ impl NamesAssoc for SingleClassNames {
     }
 
     type TaxIdsLookupIter<'a> = std::iter::Cloned<std::slice::Iter<'a, TaxId>>;
-    fn iter_lookup_taxids<'a>(lookup: &'a Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'a> {
+    fn iter_lookup_taxids(lookup: &Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'_> {
         lookup.iter().cloned()
     }
 }
@@ -309,22 +310,22 @@ impl NamesAssoc for NoNames {
     fn forget_taxids<Keep>(&mut self, _keep: Keep) where Keep: FnMut(TaxId) -> bool {}
 
     type NameLookup = !;
-    fn lookup_names<'a>(&'a self, _taxid: TaxId) -> Option<&'a Self::NameLookup> {
+    fn lookup_names(&self, _taxid: TaxId) -> Option<&Self::NameLookup> {
         None
     }
 
     type NamesLookupIter<'a> = std::iter::Empty<&'a str>;
-    fn iter_lookup_names<'a>(_lookup: &'a Self::NameLookup) -> Self::NamesLookupIter<'a> {
+    fn iter_lookup_names(_lookup: &Self::NameLookup) -> Self::NamesLookupIter<'_> {
         std::iter::empty()
     }
 
     type TaxIdsLookup = !;
-    fn lookup_taxids<'a>(&'a self, _name: &str) -> Option<&'a Self::TaxIdsLookup> {
+    fn lookup_taxids(&self, _name: &str) -> Option<&Self::TaxIdsLookup> {
         None
     }
 
     type TaxIdsLookupIter<'a> = std::iter::Empty<TaxId>;
-    fn iter_lookup_taxids<'a>(_lookup: &'a Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'a> {
+    fn iter_lookup_taxids(_lookup: &Self::TaxIdsLookup) -> Self::TaxIdsLookupIter<'_> {
         std::iter::empty()
     }
 
