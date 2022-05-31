@@ -2,19 +2,21 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 
 use clap::Args;
-use crossbeam::channel::{Sender, Receiver};
+use crossbeam::channel::{Receiver, Sender};
 use csv::{StringRecord, WriterBuilder};
 use extended_rational::Rational;
 use itertools::Itertools;
 use rayon::iter::{ParallelBridge, ParallelIterator};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::preprocess_blastout;
-use crate::preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy, with_some_ncbi_or_newick_taxonomy, with_some_taxonomy};
-use crate::taxonomy::formats::ncbi::{NcbiTaxonomy, NamesAssoc};
+use crate::preprocess_taxonomy::{
+    with_some_ncbi_or_newick_taxonomy, with_some_taxonomy, PreprocessedTaxonomy,
+    PreprocessedTaxonomyFormat, SomeTaxonomy,
+};
+use crate::taxonomy::formats::ncbi::{NamesAssoc, NcbiTaxonomy};
 use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
 use crate::util::writing_new_file_or_stdout;
-
 
 #[derive(Clone, Debug, Default)]
 struct TaxonAnnotations {
@@ -39,7 +41,6 @@ fn annotate_match_count<Tax: LabelledTaxonomy>(
     taxonomy: &Tax,
     reads_node_ids: &HashSet<NodeId>,
 ) -> anyhow::Result<(NodeId, TaxonomyAnnotations)> {
-
     let reads_lca_id: NodeId = reads_node_ids
         .iter()
         .copied()
@@ -100,7 +101,8 @@ fn annotate_match_count<Tax: LabelledTaxonomy>(
 }
 
 fn annotate_precision_recall(ann_map: &mut TaxonomyAnnotations, reads_lca_id: NodeId) {
-    let lca_ann = ann_map.get(&reads_lca_id)
+    let lca_ann = ann_map
+        .get(&reads_lca_id)
         .expect("LCA should already be annotated")
         .clone();
 
@@ -134,7 +136,6 @@ fn assign_reads(ann_map: &TaxonomyAnnotations, q: Rational) -> (Vec<NodeId>, Rat
         if min_penalty.is_negative() || penalty < min_penalty {
             min_penalty = penalty;
             min_nodes = vec![*node_id];
-
         } else if penalty == min_penalty {
             min_nodes.push(*node_id);
         }
@@ -188,7 +189,7 @@ where
         Ok(ReadsCsvHeader {
             //query_id_col,
             subjects_id_col: subjects_id_col.to_owned(),
-            weights_col: Some(weights_id.to_owned())
+            weights_col: Some(weights_id.to_owned()),
         })
     } else {
         Ok(ReadsCsvHeader {
@@ -279,10 +280,10 @@ where
 
 fn ncbi_taxonomy_lookup_taxid_leaf<'a, Names: 'static + NamesAssoc + Send>(
     tax: &'a NcbiTaxonomy<Names>,
-) -> impl Fn(&str) -> Vec<NodeId> + 'a
-{
+) -> impl Fn(&str) -> Vec<NodeId> + 'a {
     |name: &str| {
-        let mut v = name.parse()
+        let mut v = name
+            .parse()
             .into_iter()
             .map(NodeId)
             .filter_map(|node| tax.fixup_node(node))
@@ -300,7 +301,8 @@ where
     Tax: LabelledTaxonomy,
 {
     |name: &str| {
-        let mut v = tax.nodes_with_label(name)
+        let mut v = tax
+            .nodes_with_label(name)
             .filter(|&node| tax.is_leaf(node))
             .collect_vec();
 
@@ -326,7 +328,7 @@ fn load_reads_and_produce_assignments(
     macro_rules! produce_assignments_with {
         ($tax:expr, $lookup_taxid:expr) => {
             produce_assignments(csv_reader, &header, $tax, $lookup_taxid, q, sender)
-        }
+        };
     }
 
     with_some_ncbi_or_newick_taxonomy!(&taxonomy.tree,
@@ -362,8 +364,7 @@ fn write_assignments(
     output: &str,
     taxonomy: &PreprocessedTaxonomy,
     assignments: Receiver<QueryAssignments>,
-) -> anyhow::Result<()>
-{
+) -> anyhow::Result<()> {
     with_some_taxonomy!(&taxonomy.tree, tax => {
         writing_new_file_or_stdout!(output, writer => {
             let mut csv_writer = WriterBuilder::new()

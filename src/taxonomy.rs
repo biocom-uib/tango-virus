@@ -1,4 +1,9 @@
-use std::{fmt::{Debug, Display}, hash::Hash, collections::{HashSet, HashMap}, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::{Debug, Display},
+    hash::Hash,
+    str::FromStr,
+};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -87,16 +92,24 @@ pub trait Taxonomy: Sized {
     fn lca(&self, node1: NodeId, node2: NodeId) -> Option<NodeId> {
         if node1 == node2 {
             Some(node1)
-
         } else if self.has_uniform_depths().is_some() && self.is_leaf(node1) && self.is_leaf(node2) {
             self.ancestors(node1)
                 .zip(self.ancestors(node2))
                 .find(|(p1, p2)| p1 == p2)
                 .map(|(p, _)| p)
-
         } else {
-            let parents1 = self.ancestors(node1).collect_vec().into_iter().rev().chain([node1]);
-            let parents2 = self.ancestors(node2).collect_vec().into_iter().rev().chain([node2]);
+            let parents1 = self
+                .ancestors(node1)
+                .collect_vec()
+                .into_iter()
+                .rev()
+                .chain([node1]);
+            let parents2 = self
+                .ancestors(node2)
+                .collect_vec()
+                .into_iter()
+                .rev()
+                .chain([node2]);
 
             itertools::izip!(parents1, parents2)
                 .take_while(|(p1, p2)| p1 == p2)
@@ -114,9 +127,10 @@ pub trait Taxonomy: Sized {
     }
 }
 
-pub trait LabelledTaxonomy : Taxonomy {
+pub trait LabelledTaxonomy: Taxonomy {
     type Labels<'a>: Iterator<Item = &'a str>
-        where Self: 'a;
+    where
+        Self: 'a;
 
     fn labels_of(&self, node: NodeId) -> Self::Labels<'_>;
 
@@ -125,7 +139,8 @@ pub trait LabelledTaxonomy : Taxonomy {
     }
 
     type NodesWithLabel<'a>: Iterator<Item = NodeId> + 'a
-        where Self: 'a;
+    where
+        Self: 'a;
 
     fn nodes_with_label<'a>(&'a self, label: &'a str) -> Self::NodesWithLabel<'a>;
 
@@ -176,7 +191,10 @@ impl<Tax: Taxonomy> TopologyReplacer<Tax> for Contractor<Tax> {
             }
 
             fn new(contraction_parent: NodeId, children_iter: Tax::Children<'tax>) -> Self {
-                StackFrame { contraction_parent, children_iter }
+                StackFrame {
+                    contraction_parent,
+                    children_iter,
+                }
             }
         }
 
@@ -222,7 +240,9 @@ pub trait TaxonomyMut: Taxonomy {
         Self::UnderlyingTopology:
             for<'b> Taxonomy<Children<'b> = Self::Children<'b>, RankSym = Self::RankSym>,
     {
-        self.replace_topology_with(Contractor { ranks_syms: new_ranks })
+        self.replace_topology_with(Contractor {
+            ranks_syms: new_ranks,
+        })
     }
 }
 
@@ -315,7 +335,6 @@ impl<'tax, Tax: Taxonomy> Iterator for PostOrderIter<'tax, Tax> {
     }
 }
 
-
-pub mod generic;
 pub mod formats;
+pub mod generic;
 pub(crate) mod util;

@@ -1,21 +1,23 @@
 #![feature(
     associated_type_defaults,
     generic_associated_types,
+    hash_raw_entry,
     hash_set_entry,
     io_read_to_string,
     iterator_try_reduce,
-    never_type,
+    never_type
 )]
 
 use clap::{Parser, Subcommand};
 
 pub mod taxonomy;
 
+pub(crate) mod filter;
 pub(crate) mod util;
 
+mod assign;
 mod preprocess_blastout;
 mod preprocess_taxonomy;
-mod assign;
 mod refine_vpf_class;
 
 #[derive(Subcommand)]

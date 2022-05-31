@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::taxonomy::{
-    generic::GenericTaxonomy, ContractedNodes, LabelledTaxonomy, NodeId, Taxonomy, TaxonomyMut,
-    TopologyReplacer, self,
+    self, generic::GenericTaxonomy, ContractedNodes, LabelledTaxonomy, NodeId, Taxonomy,
+    TaxonomyMut, TopologyReplacer,
 };
 use itertools::Either;
 use newick_rs::SimpleTree;
@@ -17,7 +17,7 @@ use string_interner::backend::{Backend, StringBackend};
 use self::dmp::parse_fields;
 pub use self::{
     dmp::DmpError,
-    names::{NamesAssoc, AllNames, NoNames, SingleClassNames},
+    names::{AllNames, NamesAssoc, NoNames, SingleClassNames},
 };
 
 pub mod dmp;
@@ -76,13 +76,12 @@ impl<Names> NcbiTaxonomy<Names> {
         match (&self.merged_taxids, &self.contracted_taxids) {
             (None, None) => None,
 
-            (Some(merged), None) => {
-                merged.get(&node).copied().and_then(|node| self.fixup_node(node))
-            },
+            (Some(merged), None) => merged
+                .get(&node)
+                .copied()
+                .and_then(|node| self.fixup_node(node)),
 
-            (None, Some(contracted)) => {
-                contracted.0.get(&node).copied()
-            },
+            (None, Some(contracted)) => contracted.0.get(&node).copied(),
 
             (Some(merged), Some(contracted)) => {
                 if let Some(&fixed) = merged.get(&node) {
@@ -92,7 +91,7 @@ impl<Names> NcbiTaxonomy<Names> {
                 } else {
                     None
                 }
-            },
+            }
         }
     }
 
@@ -101,24 +100,24 @@ impl<Names> NcbiTaxonomy<Names> {
     }
 
     pub fn with_names<NewNames>(self, new_names: NewNames) -> NcbiTaxonomy<NewNames> {
-       NcbiTaxonomy {
-          tree: self.tree,
-          merged_taxids: self.merged_taxids,
-          contracted_taxids: None,
-          names: new_names,
-       }
+        NcbiTaxonomy {
+            tree: self.tree,
+            merged_taxids: self.merged_taxids,
+            contracted_taxids: None,
+            names: new_names,
+        }
     }
 
     pub fn map_names<F, NewNames>(self, f: F) -> NcbiTaxonomy<NewNames>
     where
-        F: FnOnce(Names) -> NewNames
+        F: FnOnce(Names) -> NewNames,
     {
-       NcbiTaxonomy {
-          tree: self.tree,
-          merged_taxids: self.merged_taxids,
-          contracted_taxids: None,
-          names: f(self.names),
-       }
+        NcbiTaxonomy {
+            tree: self.tree,
+            merged_taxids: self.merged_taxids,
+            contracted_taxids: None,
+            names: f(self.names),
+        }
     }
 }
 
@@ -207,10 +206,7 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
 }
 
 impl<Names: NamesAssoc + Send + 'static> LabelledTaxonomy for NcbiTaxonomy<Names> {
-    type Labels<'a> = Either<
-        std::iter::Empty<&'a str>,
-        Names::NamesLookupIter<'a>
-    >;
+    type Labels<'a> = Either<std::iter::Empty<&'a str>, Names::NamesLookupIter<'a>>;
 
     fn labels_of(&self, node: NodeId) -> Self::Labels<'_> {
         if let Some(result) = self.names.lookup_names(node) {
@@ -235,7 +231,7 @@ impl<Names: NamesAssoc + Send + 'static> LabelledTaxonomy for NcbiTaxonomy<Names
 
 pub struct NodesWithLabel<'a, Names: NamesAssoc> {
     tax: &'a NcbiTaxonomy<Names>,
-    iter: Option<Names::TaxIdsLookupIter<'a>>
+    iter: Option<Names::TaxIdsLookupIter<'a>>,
 }
 
 impl<'a, Names: NamesAssoc> Iterator for NodesWithLabel<'a, Names> {
@@ -253,7 +249,7 @@ impl<Names: NamesAssoc + Send + 'static> TaxonomyMut for NcbiTaxonomy<Names> {
 
     fn replace_topology_with<Replacer>(&mut self, replacer: Replacer) -> Replacer::Result
     where
-        Replacer: TopologyReplacer<Self::UnderlyingTopology>
+        Replacer: TopologyReplacer<Self::UnderlyingTopology>,
     {
         self.tree.replace_topology_with(replacer)
     }
@@ -276,8 +272,6 @@ impl<Names: NamesAssoc + Send + 'static> TaxonomyMut for NcbiTaxonomy<Names> {
         contracted
     }
 }
-
-
 
 fn make_simple_tree(
     node_id: TaxId,

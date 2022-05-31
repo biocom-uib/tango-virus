@@ -1,13 +1,24 @@
-use std::{collections::{HashSet, HashMap}, iter, path::Path, io, error};
+use std::{
+    collections::{HashMap, HashSet},
+    io, iter,
+    num::ParseFloatError,
+    path::Path,
+};
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use clap::Args;
 use itertools::Itertools;
-use serde::{Serialize, Deserialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
+use thiserror::Error;
 
 use crate::{
-    preprocess_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy, with_some_taxonomy},
-    taxonomy::{NodeId, LabelledTaxonomy, Taxonomy}, assign::AssignmentRecord, util::writing_new_file_or_stdout,
+    assign::AssignmentRecord,
+    filter::{self, FromStrFilter},
+    preprocess_taxonomy::{
+        with_some_taxonomy, PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy,
+    },
+    taxonomy::{LabelledTaxonomy, NodeId, Taxonomy},
+    util::writing_new_file_or_stdout,
 };
 
 #[derive(Args)]
@@ -40,7 +51,16 @@ pub struct RefineVpfClassArgs {
 
     /// Refined VPF-Class output file (use '-' for STDOUT)
     #[clap(short, long)]
-    output: String
+    output: String,
+
+    /// Filters to apply before processing. Example: --filter 'membership_ratio>=0.2'
+    #[clap(long)]
+    filter: Vec<String>,
+
+    /// Print a summary of class frequencies and their average membership ratio (incompatible with
+    /// '--output -').
+    #[clap(long)]
+    print_summary: bool,
 }
 
 impl RefineVpfClassArgs {
@@ -68,19 +88,29 @@ struct RankAssignments {
 
 impl RankAssignments {
     fn add_descendant_from_rank(&mut self, rank_node: NodeId, descendant: NodeId) {
-        self.rank_assignments.entry(rank_node).or_default().insert(descendant);
+        self.rank_assignments
+            .entry(rank_node)
+            .or_default()
+            .insert(descendant);
     }
 
     fn add_ascendant_at_rank(&mut self, rank_node: NodeId, ascendant: NodeId) {
-        self.rank_assignments.entry(rank_node).or_default().insert(ascendant);
+        self.rank_assignments
+            .entry(rank_node)
+            .or_default()
+            .insert(ascendant);
     }
 
     fn add_contig_for_rank(&mut self, rank_node: NodeId, contig: String) {
-        self.rank_contigs.entry(rank_node).or_default().insert(contig);
+        self.rank_contigs
+            .entry(rank_node)
+            .or_default()
+            .insert(contig);
     }
 
     fn add_contig_for_rank_cloned(&mut self, rank_node: NodeId, contig: &str) {
-        self.rank_contigs.entry(rank_node)
+        self.rank_contigs
+            .entry(rank_node)
             .or_default()
             .get_or_insert_owned(contig);
     }
@@ -119,7 +149,6 @@ fn load_rank_assignments<Tax: Taxonomy, P: AsRef<Path>>(
         if let Some(valid_ancestor) = valid_ancestor {
             assignments.add_descendant_from_rank(valid_ancestor, node);
             assignments.add_contig_for_rank(valid_ancestor, record.assigned_name);
-
         } else if include_descendants {
             let mut valid_descendants = tax
                 .postorder_descendants(node)
@@ -131,7 +160,6 @@ fn load_rank_assignments<Tax: Taxonomy, P: AsRef<Path>>(
                     assignments.add_ascendant_at_rank(valid_descendant, node);
                     assignments.add_contig_for_rank_cloned(valid_descendant, &record.assigned_name);
                 }
-
             } else {
                 assignments.dropped_records += 1;
 
@@ -139,7 +167,9 @@ fn load_rank_assignments<Tax: Taxonomy, P: AsRef<Path>>(
                     "Warning: No valid descendants found for {:?} (taxid:{}) (rank: {})",
                     record.assigned_name,
                     node,
-                    tax.find_rank(node).and_then(|sym| tax.rank_sym_str(sym)).unwrap_or(""),
+                    tax.find_rank(node)
+                        .and_then(|sym| tax.rank_sym_str(sym))
+                        .unwrap_or(""),
                 );
             }
         } else {
@@ -149,7 +179,9 @@ fn load_rank_assignments<Tax: Taxonomy, P: AsRef<Path>>(
                 "Warning: No valid ancestors found for {:?} (taxid:{}) (rank: {})",
                 record.assigned_name,
                 node,
-                tax.find_rank(node).and_then(|sym| tax.rank_sym_str(sym)).unwrap_or(""),
+                tax.find_rank(node)
+                    .and_then(|sym| tax.rank_sym_str(sym))
+                    .unwrap_or(""),
             );
         }
 
@@ -166,6 +198,62 @@ struct VpfClassRecord {
     membership_ratio: f64,
     virus_hit_score: f64,
     confidence_score: f64,
+}
+
+enum VpfClassRecordFieldValue {
+    VirusName(String),
+    ClassName(String),
+    MembershipRatio(f64),
+    VirusHitScore(f64),
+    ConfidenceScore(f64),
+}
+
+struct VpfClassRecordFilter {
+    field_value: VpfClassRecordFieldValue,
+    op: filter::Op,
+}
+
+impl VpfClassRecordFilter {
+    fn apply(&self, record: &VpfClassRecord) -> bool {
+        use VpfClassRecordFieldValue::*;
+
+        match &self.field_value {
+            VirusName(value) => self.op.apply(&record.virus_name, value),
+            ClassName(value) => self.op.apply(&record.class_name, value),
+            MembershipRatio(value) => self.op.apply(&record.membership_ratio, value),
+            VirusHitScore(value) => self.op.apply(&record.virus_hit_score, value),
+            ConfidenceScore(value) => self.op.apply(&record.confidence_score, value),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+enum VpfClassRecordFilterParseError {
+    #[error("Error parsing floating point number")]
+    FloatParseError(#[from] ParseFloatError),
+
+    #[error("Unknown field {:?}, Valid names are virus_name, class_name, membership_ratio, virus_hit_score and confidence_score", .0)]
+    UnknownField(String),
+}
+
+impl FromStrFilter for VpfClassRecordFilter {
+    type Err = VpfClassRecordFilterParseError;
+
+    fn try_from_parts(key: &str, op: filter::Op, value: &str) -> Result<Self, Self::Err> {
+        use VpfClassRecordFieldValue::*;
+        use VpfClassRecordFilterParseError::*;
+
+        let field_value = match key {
+            "virus_name" => VirusName(value.to_owned()),
+            "class_name" => ClassName(value.to_owned()),
+            "membership_ratio" => MembershipRatio(value.parse()?),
+            "VirusHitScore" => VirusHitScore(value.parse()?),
+            "ConfidenceScore" => ConfidenceScore(value.parse()?),
+            _ => return Err(UnknownField(key.to_owned())),
+        };
+
+        Ok(VpfClassRecordFilter { field_value, op })
+    }
 }
 
 #[derive(Serialize)]
@@ -207,68 +295,117 @@ fn serialize_assigned_contigs<S: Serializer>(
     serializer.serialize_str(&contigs.iter().join(";"))
 }
 
-fn open_and_refine_vpf_class<'a, Tax: LabelledTaxonomy, P: AsRef<Path>>(
+fn enrich_vpf_class_record<'a, Tax: LabelledTaxonomy>(
     tax: &'a Tax,
     rank_sym: Tax::RankSym,
     rank_assignments: &'a RankAssignments,
     allow_different_ranks: bool,
-    path: P,
-) -> Result<impl Iterator<Item = csv::Result<EnrichedVpfClassRecord<'a>>> + 'a> {
-    let csv_reader = csv::ReaderBuilder::new()
-        .has_headers(true)
-        .delimiter(b'\t')
-        .from_path(path)?;
+    record: VpfClassRecord,
+) -> Option<EnrichedVpfClassRecord<'a>> {
+    let mut enriched = EnrichedVpfClassRecord::new(record);
 
-    let result = csv_reader.into_deserialize().filter_map(move |record| {
-        match record {
-            Ok(record) => {
-                let mut enriched = EnrichedVpfClassRecord::new(record);
+    let mut found_mismatched_ranks = false;
+    let mut found_taxids = false;
 
-                let mut found_mismatched_ranks = false;
-                let mut found_taxids = false;
+    for node in tax.nodes_with_label(&enriched.vpf_class_record.class_name) {
+        found_taxids = true;
 
-                for node in tax.nodes_with_label(&enriched.vpf_class_record.class_name) {
-                    found_taxids = true;
-
-                    if let Some((taxids, contigs)) = rank_assignments.lookup_rank_node(node) {
-                        if allow_different_ranks || tax.find_rank(node) == Some(rank_sym) {
-                            enriched.assigned_taxids.extend(taxids);
-                            enriched.assigned_contigs.extend(contigs.iter().map(|s| s.as_str()));
-                        } else {
-                            found_mismatched_ranks = true;
-                        }
-                    }
-                }
-
-                if !found_taxids {
-                    eprintln!("Warning: No taxids found for classification {}", &enriched.vpf_class_record.class_name);
-                }
-
-                if found_mismatched_ranks {
-                    eprintln!(
-                        "Warning: Found taxids for classification {} but had mismatching ranks, skipping (use --allow-different-ranks to disable the check)",
-                        &enriched.vpf_class_record.class_name
-                    );
-                }
-
-                if enriched.has_assignments() {
-                    Some(Ok(enriched))
-                } else {
-                    None
-                }
+        if let Some((taxids, contigs)) = rank_assignments.lookup_rank_node(node) {
+            if allow_different_ranks || tax.find_rank(node) == Some(rank_sym) {
+                enriched.assigned_taxids.extend(taxids);
+                enriched
+                    .assigned_contigs
+                    .extend(contigs.iter().map(|s| s.as_str()));
+            } else {
+                found_mismatched_ranks = true;
             }
-            Err(err) => Some(Err(err)),
         }
-    });
+    }
 
-    Ok(result)
+    if !found_taxids {
+        eprintln!(
+            "Warning: No taxids found for classification {}",
+            &enriched.vpf_class_record.class_name
+        );
+    }
+
+    if found_mismatched_ranks {
+        eprintln!(
+            "Warning: Found taxids for classification {} but had mismatching ranks, skipping (use --allow-different-ranks to disable the check)",
+            &enriched.vpf_class_record.class_name
+        );
+    }
+
+    if enriched.has_assignments() {
+        Some(enriched)
+    } else {
+        None
+    }
 }
 
-fn write_refined_output<'a, W, I, E: 'static>(writer: W, refinement: I) -> Result<()>
+#[derive(Default)]
+struct ClassFreqs {
+    freqs: HashMap<String, usize>,
+}
+
+impl ClassFreqs {
+    fn add(&mut self, class_name: &str) {
+        *self
+            .freqs
+            .raw_entry_mut()
+            .from_key(class_name)
+            .or_insert_with(|| (class_name.to_owned(), 0))
+            .1 += 1;
+    }
+}
+
+fn collect_frequencies<'a, 'b, I>(
+    freqs: &'b mut ClassFreqs,
+    refinement: I,
+) -> impl Iterator<Item = EnrichedVpfClassRecord<'a>> + 'b
+where
+    'a: 'b,
+    I: Iterator<Item = EnrichedVpfClassRecord<'a>> + 'b,
+{
+    refinement.inspect(|record| {
+        freqs.add(&record.vpf_class_record.class_name);
+    })
+}
+
+fn write_frequencies<W: io::Write>(writer: W, freqs: &ClassFreqs) -> csv::Result<()> {
+    #[derive(Serialize)]
+    struct ClassFreq<'a> {
+        class_name: &'a str,
+        count: usize,
+    }
+
+    let mut class_freqs = freqs
+        .freqs
+        .iter()
+        .map(|(class_name, count)| ClassFreq {
+            class_name: &*class_name,
+            count: *count,
+        })
+        .collect_vec();
+    class_freqs.sort_by_key(|a| -(a.count as i64));
+
+    let mut csv_writer = csv::WriterBuilder::new()
+        .has_headers(true)
+        .delimiter(b'\t')
+        .from_writer(writer);
+
+    for freq in class_freqs {
+        csv_writer.serialize(&freq)?;
+    }
+
+    csv_writer.flush()?;
+    Ok(())
+}
+
+fn write_refined_output<'a, W, I>(writer: W, refinement: I) -> Result<()>
 where
     W: io::Write,
-    I: IntoIterator<Item = Result<EnrichedVpfClassRecord<'a>, E>>,
-    E: error::Error + Send + Sync,
+    I: IntoIterator<Item = EnrichedVpfClassRecord<'a>>,
 {
     let mut csv_writer = csv::WriterBuilder::new()
         .has_headers(true)
@@ -276,13 +413,25 @@ where
         .from_writer(writer);
 
     for record in refinement {
-        csv_writer.serialize(record?)?;
+        csv_writer.serialize(record)?;
     }
 
     Ok(())
 }
 
 pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
+    if args.print_summary && args.output == "-" {
+        anyhow::anyhow!(
+            "--output - is incompatible with --print-summary. Use --output /path/to/file instead."
+        );
+    }
+
+    let filters: Vec<VpfClassRecordFilter> = args
+        .filter
+        .iter()
+        .map(|f| VpfClassRecordFilter::parse_filter(&f))
+        .try_collect()?;
+
     let rank = args.get_or_infer_rank().ok_or_else(|| {
         anyhow::anyhow!(
             "--rank not specified and could not be deduced from {:?}",
@@ -292,7 +441,7 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
 
     let taxonomy = PreprocessedTaxonomy::deserialize_with_format(
         &args.preprocessed_taxonomy,
-        args.taxonomy_format
+        args.taxonomy_format,
     )?;
 
     with_some_taxonomy!(&taxonomy.tree, tax => {
@@ -313,18 +462,35 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
             rank_assignments.dropped_records, rank_assignments.total_records
         );
 
-        let refinement = open_and_refine_vpf_class(
-            tax,
-            rank_sym,
-            &rank_assignments,
-            args.allow_different_ranks,
-            &args.vpf_class_prediction,
-        )
-        .context("Error reading VPF-Class output")?;
+        let csv_reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .delimiter(b'\t')
+            .from_path(&args.vpf_class_prediction)?;
 
-        writing_new_file_or_stdout!(&args.output, writer => {
-            write_refined_output(writer, refinement)?;
-        });
+        itertools::process_results(csv_reader.into_deserialize(), |records| {
+            let refinement = records
+                .filter(|record| filters.iter().all(|f| f.apply(record)))
+                .filter_map(|record| enrich_vpf_class_record(tax, rank_sym, &rank_assignments, args.allow_different_ranks, record));
+
+            if args.print_summary {
+                let mut freqs = ClassFreqs::default();
+
+                let refinement = collect_frequencies(&mut freqs, refinement);
+
+                writing_new_file_or_stdout!(&args.output, writer => {
+                    write_refined_output(writer, refinement)?;
+                });
+
+                write_frequencies(io::stdout(), &freqs)?;
+
+            } else {
+                writing_new_file_or_stdout!(&args.output, writer => {
+                    write_refined_output(writer, refinement)?;
+                });
+            }
+
+            anyhow::Ok(())
+        })??;
     });
 
     Ok(())

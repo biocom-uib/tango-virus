@@ -1,8 +1,8 @@
 use core::slice;
 use std::io::BufRead;
-use std::{collections::HashMap, path::Path, io::BufReader, fs::File};
+use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use string_interner::{symbol::SymbolU32, StringInterner, Symbol};
 
 use crate::taxonomy::NodeId;
@@ -10,20 +10,19 @@ use crate::taxonomy::NodeId;
 use super::dmp::{parse_fields, DmpError};
 use super::TaxId;
 
-
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NameClassSymbol(u32);
 
 impl From<SymbolU32> for NameClassSymbol {
     fn from(sym: SymbolU32) -> Self {
-       NameClassSymbol(sym.to_usize() as u32)
+        NameClassSymbol(sym.to_usize() as u32)
     }
 }
 
 impl From<NameClassSymbol> for SymbolU32 {
-   fn from(sym: NameClassSymbol) -> Self {
-      <SymbolU32 as Symbol>::try_from_usize(sym.0 as usize).unwrap()
-   }
+    fn from(sym: NameClassSymbol) -> Self {
+        <SymbolU32 as Symbol>::try_from_usize(sym.0 as usize).unwrap()
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -68,9 +67,9 @@ impl AllNames {
 
     pub fn only_of_class(self, name_class: &str) -> Result<SingleClassNames, Self> {
         let single_class = if let Some(sym) = self.name_classes.get(name_class) {
-           sym.into()
+            sym.into()
         } else {
-           return Err(self)
+            return Err(self);
         };
 
         let taxid_to_name = self
@@ -145,7 +144,9 @@ impl NoNames {
 pub trait NamesAssoc {
     fn insert(&mut self, taxid: TaxId, name: &str, unique_name: &str, name_class: &str);
 
-    fn forget_taxids<Keep>(&mut self, keep: Keep) where Keep: FnMut(TaxId) -> bool;
+    fn forget_taxids<Keep>(&mut self, keep: Keep)
+    where
+        Keep: FnMut(TaxId) -> bool;
 
     type NameLookup;
     fn lookup_names(&self, taxid: TaxId) -> Option<&Self::NameLookup>;
@@ -194,7 +195,7 @@ impl NamesAssoc for AllNames {
         } else if !unique_name.is_empty() {
             unique_name
         } else {
-            return
+            return;
         };
 
         let name_class = self.name_classes.get_or_intern(name_class).into();
@@ -274,7 +275,10 @@ impl NamesAssoc for SingleClassNames {
         }
     }
 
-    fn forget_taxids<Keep>(&mut self, mut keep: Keep) where Keep: FnMut(TaxId) -> bool {
+    fn forget_taxids<Keep>(&mut self, mut keep: Keep)
+    where
+        Keep: FnMut(TaxId) -> bool,
+    {
         self.taxid_to_name.retain(|taxid, _| keep(*taxid));
 
         self.name_to_taxids.retain(|_, taxids| {
@@ -307,7 +311,11 @@ impl NamesAssoc for SingleClassNames {
 impl NamesAssoc for NoNames {
     fn insert(&mut self, _taxid: TaxId, _name: &str, _unique_name: &str, _name_class: &str) {}
 
-    fn forget_taxids<Keep>(&mut self, _keep: Keep) where Keep: FnMut(TaxId) -> bool {}
+    fn forget_taxids<Keep>(&mut self, _keep: Keep)
+    where
+        Keep: FnMut(TaxId) -> bool,
+    {
+    }
 
     type NameLookup = !;
     fn lookup_names(&self, _taxid: TaxId) -> Option<&Self::NameLookup> {

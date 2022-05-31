@@ -1,12 +1,21 @@
+use std::num::{ParseFloatError, ParseIntError};
+use std::str::ParseBoolError;
+use std::sync::Arc;
+
 use anyhow::Context;
 use clap::{ArgEnum, Args};
 use itertools::Itertools;
-use lazy_static::lazy_static;
 
+use polars::datatypes::DataType;
 use polars::lazy::prelude::LazyCsvReader;
-use polars::prelude::*;
-use regex::Regex;
+use polars::prelude::{
+    col, CsvWriter, DistinctKeepStrategy, Expr, GetOutput, IntoSeries, LazyFrame, LiteralValue,
+    NullValues, Schema,
+};
+use polars_io::SerWriter;
+use thiserror::Error;
 
+use crate::filter::{FromStrFilter, Op};
 use crate::util::writing_new_file_or_stdout;
 
 pub mod fields {
@@ -15,56 +24,56 @@ pub mod fields {
     use lazy_static::lazy_static;
     use polars::datatypes::DataType;
 
-    pub const QSEQID: (&str, DataType)      = ("qseqid",      DataType::Utf8);
-    pub const QGI: (&str, DataType)         = ("qgi",         DataType::Utf8);
-    pub const QACC: (&str, DataType)        = ("qacc",        DataType::Utf8);
-    pub const QACCVER: (&str, DataType)     = ("qaccver",     DataType::Utf8);
-    pub const QLEN: (&str, DataType)        = ("qlen",        DataType::Int32);
-    pub const SSEQID: (&str, DataType)      = ("sseqid",      DataType::Utf8);
-    pub const SALLSEQID: (&str, DataType)   = ("sallseqid",   DataType::Utf8);
-    pub const SGI: (&str, DataType)         = ("sgi",         DataType::Utf8);
-    pub const SALLGI: (&str, DataType)      = ("sallgi",      DataType::Utf8);
-    pub const SACC: (&str, DataType)        = ("sacc",        DataType::Utf8);
-    pub const SACCVER: (&str, DataType)     = ("saccver",     DataType::Utf8);
-    pub const SALLACC: (&str, DataType)     = ("sallacc",     DataType::Utf8);
-    pub const SLEN: (&str, DataType)        = ("slen",        DataType::Int32);
-    pub const QSTART: (&str, DataType)      = ("qstart",      DataType::Int32);
-    pub const QEND: (&str, DataType)        = ("qend",        DataType::Int32);
-    pub const SSTART: (&str, DataType)      = ("sstart",      DataType::Int32);
-    pub const SEND: (&str, DataType)        = ("send",        DataType::Int32);
-    pub const QSEQ: (&str, DataType)        = ("qseq",        DataType::Utf8);
-    pub const SSEQ: (&str, DataType)        = ("sseq",        DataType::Utf8);
-    pub const EVALUE: (&str, DataType)      = ("evalue",      DataType::Float32);
-    pub const BITSCORE: (&str, DataType)    = ("bitscore",    DataType::Float32);
-    pub const SCORE: (&str, DataType)       = ("score",       DataType::Float32);
-    pub const LENGTH: (&str, DataType)      = ("length",      DataType::Int32);
-    pub const PIDENT: (&str, DataType)      = ("pident",      DataType::Float32);
-    pub const NIDENT: (&str, DataType)      = ("nident",      DataType::Int32);
-    pub const MISMATCH: (&str, DataType)    = ("mismatch",    DataType::Int32);
-    pub const POSITIVE: (&str, DataType)    = ("positive",    DataType::Int32);
-    pub const GAPOPEN: (&str, DataType)     = ("gapopen",     DataType::Int32);
-    pub const GAPS: (&str, DataType)        = ("gaps",        DataType::Int32);
-    pub const PPOS: (&str, DataType)        = ("ppos",        DataType::Float32);
-    pub const FRAMES: (&str, DataType)      = ("frames",      DataType::Utf8);
-    pub const QFRAME: (&str, DataType)      = ("qframe",      DataType::Utf8);
-    pub const SFRAME: (&str, DataType)      = ("sframe",      DataType::Utf8);
-    pub const BTOP: (&str, DataType)        = ("btop",        DataType::Utf8);
-    pub const STAXID: (&str, DataType)      = ("staxid",      DataType::Int64);
-    pub const SSCINAME: (&str, DataType)    = ("ssciname",    DataType::Utf8);
-    pub const SCOMNAME: (&str, DataType)    = ("scomname",    DataType::Utf8);
-    pub const SBLASTNAME: (&str, DataType)  = ("sblastname",  DataType::Utf8);
-    pub const SSKINGDOM: (&str, DataType)   = ("sskingdom",   DataType::Utf8);
-    pub const STAXIDS: (&str, DataType)     = ("staxids",     DataType::Utf8);
-    pub const SSCINAMES: (&str, DataType)   = ("sscinames",   DataType::Utf8);
-    pub const SCOMNAMES: (&str, DataType)   = ("scomnames",   DataType::Utf8);
+    pub const QSEQID: (&str, DataType) = ("qseqid", DataType::Utf8);
+    pub const QGI: (&str, DataType) = ("qgi", DataType::Utf8);
+    pub const QACC: (&str, DataType) = ("qacc", DataType::Utf8);
+    pub const QACCVER: (&str, DataType) = ("qaccver", DataType::Utf8);
+    pub const QLEN: (&str, DataType) = ("qlen", DataType::Int32);
+    pub const SSEQID: (&str, DataType) = ("sseqid", DataType::Utf8);
+    pub const SALLSEQID: (&str, DataType) = ("sallseqid", DataType::Utf8);
+    pub const SGI: (&str, DataType) = ("sgi", DataType::Utf8);
+    pub const SALLGI: (&str, DataType) = ("sallgi", DataType::Utf8);
+    pub const SACC: (&str, DataType) = ("sacc", DataType::Utf8);
+    pub const SACCVER: (&str, DataType) = ("saccver", DataType::Utf8);
+    pub const SALLACC: (&str, DataType) = ("sallacc", DataType::Utf8);
+    pub const SLEN: (&str, DataType) = ("slen", DataType::Int32);
+    pub const QSTART: (&str, DataType) = ("qstart", DataType::Int32);
+    pub const QEND: (&str, DataType) = ("qend", DataType::Int32);
+    pub const SSTART: (&str, DataType) = ("sstart", DataType::Int32);
+    pub const SEND: (&str, DataType) = ("send", DataType::Int32);
+    pub const QSEQ: (&str, DataType) = ("qseq", DataType::Utf8);
+    pub const SSEQ: (&str, DataType) = ("sseq", DataType::Utf8);
+    pub const EVALUE: (&str, DataType) = ("evalue", DataType::Float32);
+    pub const BITSCORE: (&str, DataType) = ("bitscore", DataType::Float32);
+    pub const SCORE: (&str, DataType) = ("score", DataType::Float32);
+    pub const LENGTH: (&str, DataType) = ("length", DataType::Int32);
+    pub const PIDENT: (&str, DataType) = ("pident", DataType::Float32);
+    pub const NIDENT: (&str, DataType) = ("nident", DataType::Int32);
+    pub const MISMATCH: (&str, DataType) = ("mismatch", DataType::Int32);
+    pub const POSITIVE: (&str, DataType) = ("positive", DataType::Int32);
+    pub const GAPOPEN: (&str, DataType) = ("gapopen", DataType::Int32);
+    pub const GAPS: (&str, DataType) = ("gaps", DataType::Int32);
+    pub const PPOS: (&str, DataType) = ("ppos", DataType::Float32);
+    pub const FRAMES: (&str, DataType) = ("frames", DataType::Utf8);
+    pub const QFRAME: (&str, DataType) = ("qframe", DataType::Utf8);
+    pub const SFRAME: (&str, DataType) = ("sframe", DataType::Utf8);
+    pub const BTOP: (&str, DataType) = ("btop", DataType::Utf8);
+    pub const STAXID: (&str, DataType) = ("staxid", DataType::Int64);
+    pub const SSCINAME: (&str, DataType) = ("ssciname", DataType::Utf8);
+    pub const SCOMNAME: (&str, DataType) = ("scomname", DataType::Utf8);
+    pub const SBLASTNAME: (&str, DataType) = ("sblastname", DataType::Utf8);
+    pub const SSKINGDOM: (&str, DataType) = ("sskingdom", DataType::Utf8);
+    pub const STAXIDS: (&str, DataType) = ("staxids", DataType::Utf8);
+    pub const SSCINAMES: (&str, DataType) = ("sscinames", DataType::Utf8);
+    pub const SCOMNAMES: (&str, DataType) = ("scomnames", DataType::Utf8);
     pub const SBLASTNAMES: (&str, DataType) = ("sblastnames", DataType::Utf8);
-    pub const SSKINGDOMS: (&str, DataType)  = ("sskingdoms",  DataType::Utf8);
-    pub const STITLE: (&str, DataType)      = ("stitle",      DataType::Utf8);
-    pub const SALLTITLES: (&str, DataType)  = ("salltitles",  DataType::Utf8);
-    pub const SSTRAND: (&str, DataType)     = ("sstrand",     DataType::Utf8);
-    pub const QCOVS: (&str, DataType)       = ("qcovs",       DataType::Float32);
-    pub const QCOVHSP: (&str, DataType)     = ("qcovhsp",     DataType::Float32);
-    pub const QCOVUS: (&str, DataType)      = ("qcovus",      DataType::Float32);
+    pub const SSKINGDOMS: (&str, DataType) = ("sskingdoms", DataType::Utf8);
+    pub const STITLE: (&str, DataType) = ("stitle", DataType::Utf8);
+    pub const SALLTITLES: (&str, DataType) = ("salltitles", DataType::Utf8);
+    pub const SSTRAND: (&str, DataType) = ("sstrand", DataType::Utf8);
+    pub const QCOVS: (&str, DataType) = ("qcovs", DataType::Float32);
+    pub const QCOVHSP: (&str, DataType) = ("qcovhsp", DataType::Float32);
+    pub const QCOVUS: (&str, DataType) = ("qcovus", DataType::Float32);
 
     lazy_static! {
         pub static ref FIELD_TYPES: HashMap<&'static str, DataType> = HashMap::from([
@@ -193,10 +202,16 @@ pub struct PreprocessBlastOutArgs {
 
 enum BlastOutFmt {
     // TSV without header
-    Six { delimiter: u8, present_columns: Vec<String> },
+    Six {
+        delimiter: u8,
+        present_columns: Vec<String>,
+    },
 
     // like Six, but with comments
-    Seven { delimiter: u8, present_columns: Vec<String> },
+    Seven {
+        delimiter: u8,
+        present_columns: Vec<String>,
+    },
 }
 
 fn parse_blast_outfmt(fmt: &str) -> anyhow::Result<BlastOutFmt> {
@@ -215,7 +230,10 @@ fn parse_blast_outfmt(fmt: &str) -> anyhow::Result<BlastOutFmt> {
         };
 
         let present_columns = if fmt_args.is_empty() {
-            fields::DEFAULT_BLASTN_COLUMNS.iter().map(|&s| s.to_owned()).collect_vec()
+            fields::DEFAULT_BLASTN_COLUMNS
+                .iter()
+                .map(|&s| s.to_owned())
+                .collect_vec()
         } else {
             fmt_args.iter().map(|&s| s.to_owned()).collect_vec()
         };
@@ -226,12 +244,18 @@ fn parse_blast_outfmt(fmt: &str) -> anyhow::Result<BlastOutFmt> {
     match split_fmt.first().and_then(|s| s.parse::<u32>().ok()) {
         Some(6) => {
             let (delimiter, present_columns) = parse_blast_outfmt_6_or_7(&split_fmt[1..])?;
-            Ok(BlastOutFmt::Six { delimiter, present_columns })
-        },
+            Ok(BlastOutFmt::Six {
+                delimiter,
+                present_columns,
+            })
+        }
         Some(7) => {
             let (delimiter, present_columns) = parse_blast_outfmt_6_or_7(&split_fmt[1..])?;
-            Ok(BlastOutFmt::Seven { delimiter, present_columns })
-        },
+            Ok(BlastOutFmt::Seven {
+                delimiter,
+                present_columns,
+            })
+        }
         Some(n) => anyhow::bail!("Unsupported outfmt type: {n} (only 6 and 7 are supported)"),
         None => anyhow::bail!("Unable to parse outfmt type"),
     }
@@ -239,50 +263,61 @@ fn parse_blast_outfmt(fmt: &str) -> anyhow::Result<BlastOutFmt> {
 
 struct BlastOutFilter(Expr);
 
-fn parse_filter(filter_str: &str) -> anyhow::Result<BlastOutFilter> {
-    lazy_static! {
-        static ref RE: Regex = Regex::new(r"^(\w+)\s*([><]?=?)\s*(\S+)$").unwrap();
-    }
+#[derive(Debug, Error)]
+enum BlastoutFilterParseError {
+    #[error("Unknown column {:?}", .0)]
+    UnknownColumn(String),
 
-    let cap = RE.captures(filter_str).ok_or_else(|| anyhow::anyhow!("Could not parse filter {filter_str:?}"))?;
+    #[error("Error parsing filter value")]
+    BoolParseError(#[from] ParseBoolError),
 
-    let col_name = cap[1].to_owned();
+    #[error("Error parsing filter value")]
+    FloatParseError(#[from] ParseFloatError),
 
-    let rhs = {
+    #[error("Error parsing filter value")]
+    IntParseError(#[from] ParseIntError),
+
+    #[error("Unsupported filter data type for column {:?}: {:?}", .0, .1)]
+    UnsupportedDataType(String, &'static DataType),
+}
+
+impl FromStrFilter for BlastOutFilter {
+    type Err = BlastoutFilterParseError;
+
+    fn try_from_parts(key: &str, op: Op, value: &str) -> Result<Self, BlastoutFilterParseError> {
+        use BlastoutFilterParseError::*;
+
+        let lhs = col(key);
+
         let dtype = fields::FIELD_TYPES
-            .get(col_name.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Unknown column {col_name:?}"))?;
+            .get(key)
+            .ok_or_else(|| UnknownColumn(key.to_owned()))?;
 
-        let rhs = &cap[3];
+        let rhs = match dtype {
+            DataType::Boolean => LiteralValue::Boolean(value.parse()?),
+            DataType::Float32 => LiteralValue::Float32(value.parse()?),
+            DataType::Float64 => LiteralValue::Float64(value.parse()?),
+            DataType::Int32 => LiteralValue::Int32(value.parse()?),
+            DataType::Int64 => LiteralValue::Int32(value.parse()?),
+            DataType::UInt32 => LiteralValue::Int32(value.parse()?),
+            DataType::UInt64 => LiteralValue::Int32(value.parse()?),
+            DataType::Utf8 => LiteralValue::Utf8(value.to_owned()),
+            _ => return Err(UnsupportedDataType(key.to_owned(), dtype)),
+        };
 
-        match dtype {
-            DataType::Boolean => LiteralValue::Boolean(rhs.parse().context("Error parsing boolean filter")?),
-            DataType::Float32 => LiteralValue::Float32(rhs.parse().context("Error parsing float32 filter")?),
-            DataType::Float64 => LiteralValue::Float64(rhs.parse().context("Error parsing float64 filter")?),
-            DataType::Int32   => LiteralValue::Int32(rhs.parse().context("Error parsing int32 filter")?),
-            DataType::Int64   => LiteralValue::Int32(rhs.parse().context("Error parsing int64 filter")?),
-            DataType::UInt32  => LiteralValue::Int32(rhs.parse().context("Error parsing uint32 filter")?),
-            DataType::UInt64  => LiteralValue::Int32(rhs.parse().context("Error parsing uint64 filter")?),
-            DataType::Utf8    => LiteralValue::Utf8(rhs.to_owned()),
-            _                 => anyhow::bail!("Unsupported filter data type for column {col_name}"),
-        }
-    };
+        let rhs = Expr::Literal(rhs);
 
+        let expr = match op {
+            Op::Eq => lhs.eq(rhs),
+            Op::Neq => lhs.neq(rhs),
+            Op::Lt => lhs.lt(rhs),
+            Op::Leq => lhs.lt_eq(rhs),
+            Op::Gt => lhs.gt(rhs),
+            Op::Geq => lhs.gt_eq(rhs),
+        };
 
-    let lhs = col(&col_name);
-    let rhs = Expr::Literal(rhs);
-
-    let expr = match &cap[2] {
-        "<"  => lhs.lt(rhs),
-        "<=" => lhs.lt_eq(rhs),
-        ">"  => lhs.gt(rhs),
-        ">=" => lhs.gt_eq(rhs),
-        "=" | "==" => lhs.eq(rhs),
-        "!=" => lhs.neq(rhs),
-        op   => anyhow::bail!("Unknown comparison operator: {op:?}"),
-    };
-
-    Ok(BlastOutFilter(expr))
+        Ok(BlastOutFilter(expr))
+    }
 }
 
 fn apply_filters(df: LazyFrame, filters: impl IntoIterator<Item = BlastOutFilter>) -> LazyFrame {
@@ -318,7 +353,6 @@ fn load_blastout(
             if present.starts_with('_') {
                 schema.with_column(format!("_{n_ignored}"), DataType::Utf8);
                 n_ignored += 1;
-
             } else {
                 let dtype = if let Some(dtype) = fields::FIELD_TYPES.get(present.as_str()) {
                     dtype
@@ -354,16 +388,16 @@ fn load_blastout(
     Ok(result)
 }
 
-
 fn group_blast_hits(hits: LazyFrame, query_id_col: &str, subject_id_col: &str) -> LazyFrame {
     hits.filter(
-            col(query_id_col).is_not_null()
-                .and(col(subject_id_col).is_not_null())
-        )
-        .select([col(query_id_col), col(subject_id_col).cast(DataType::Utf8)])
-        .distinct(None, DistinctKeepStrategy::First)
-        .groupby([col(query_id_col)])
-        .agg([col(subject_id_col).list()])
+        col(query_id_col)
+            .is_not_null()
+            .and(col(subject_id_col).is_not_null()),
+    )
+    .select([col(query_id_col), col(subject_id_col).cast(DataType::Utf8)])
+    .distinct(None, DistinctKeepStrategy::First)
+    .groupby([col(query_id_col)])
+    .agg([col(subject_id_col).list()])
 }
 
 fn group_blast_hits_with_weights(
@@ -376,32 +410,35 @@ fn group_blast_hits_with_weights(
     let zipped_subject_col = format!("{subject_id_col}/{weight_col}");
 
     hits.filter(
-            col(query_id_col).is_not_null()
-                .and(col(subject_id_col).is_not_null())
-                .and(col(weight_col).is_not_null())
-        )
-        .select([col(query_id_col), col(subject_id_col).cast(DataType::Utf8), col(weight_col)])
-        .groupby([col(query_id_col), col(subject_id_col)])
-        .agg([weight_col_agg(col(weight_col))])
-        .select([
-            col(query_id_col),
-            col(subject_id_col)
-                .cast(DataType::Utf8)
-                .map_many(
-                    |params| {
-                        Ok(itertools::izip!(params[0].utf8()?, params[1].f32()?)
-                            .map(|(id, w)| {
-                                format!("{}/{}", id.unwrap_or(""), w.unwrap_or(f32::NAN))
-                            })
-                            .collect())
-                    },
-                    &[col(weight_col)],
-                    GetOutput::from_type(DataType::Utf8),
-                )
-                .alias(&zipped_subject_col),
-        ])
-        .groupby([col(query_id_col)])
-        .agg([col(&zipped_subject_col).list()])
+        col(query_id_col)
+            .is_not_null()
+            .and(col(subject_id_col).is_not_null())
+            .and(col(weight_col).is_not_null()),
+    )
+    .select([
+        col(query_id_col),
+        col(subject_id_col).cast(DataType::Utf8),
+        col(weight_col),
+    ])
+    .groupby([col(query_id_col), col(subject_id_col)])
+    .agg([weight_col_agg(col(weight_col))])
+    .select([
+        col(query_id_col),
+        col(subject_id_col)
+            .cast(DataType::Utf8)
+            .map_many(
+                |params| {
+                    Ok(itertools::izip!(params[0].utf8()?, params[1].f32()?)
+                        .map(|(id, w)| format!("{}/{}", id.unwrap_or(""), w.unwrap_or(f32::NAN)))
+                        .collect())
+                },
+                &[col(weight_col)],
+                GetOutput::from_type(DataType::Utf8),
+            )
+            .alias(&zipped_subject_col),
+    ])
+    .groupby([col(query_id_col)])
+    .agg([col(&zipped_subject_col).list()])
 }
 
 pub fn preprocess_blastout(args: PreprocessBlastOutArgs) -> anyhow::Result<()> {
@@ -414,14 +451,29 @@ pub fn preprocess_blastout(args: PreprocessBlastOutArgs) -> anyhow::Result<()> {
 
         eprintln!("Loaded BLAST+ output with schema {:?}", df.schema());
 
-        let filters: Vec<_> = args.filter.iter().map(|filter| parse_filter(filter)).try_collect()?;
+        let filters: Vec<_> = args
+            .filter
+            .iter()
+            .map(|f| BlastOutFilter::parse_filter(f))
+            .try_collect()?;
+
         apply_filters(df, filters)
     };
 
     let mut grouped = if let Some(weight_col) = &args.weight_col {
-        let weight_col_agg = args.weight_col_agg.unwrap_or(WeightColAgg::Max).into_expr_fn();
+        let weight_col_agg = args
+            .weight_col_agg
+            .unwrap_or(WeightColAgg::Max)
+            .into_expr_fn();
 
-        group_blast_hits_with_weights(df, &args.query_id_col, &args.subject_id_col, weight_col, weight_col_agg).collect()?
+        group_blast_hits_with_weights(
+            df,
+            &args.query_id_col,
+            &args.subject_id_col,
+            weight_col,
+            weight_col_agg,
+        )
+        .collect()?
     } else {
         group_blast_hits(df, &args.query_id_col, &args.subject_id_col).collect()?
     };

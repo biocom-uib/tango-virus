@@ -59,7 +59,13 @@ where
 
     while let Some(&node) = not_visited.iter().next() {
         // turbofish because rustc goes crazy
-        let ok = dfs_visit::<Id, Desc>(adjacency, &mut not_visited, &mut current_path, &mut rev_result, node);
+        let ok = dfs_visit::<Id, Desc>(
+            adjacency,
+            &mut not_visited,
+            &mut current_path,
+            &mut rev_result,
+            node,
+        );
 
         if !ok {
             return Err(Loop(current_path));

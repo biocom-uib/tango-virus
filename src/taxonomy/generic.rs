@@ -1,8 +1,18 @@
-use std::{collections::{HashMap, hash_map::{Entry, self}}, mem, sync::Mutex};
+use std::{
+    collections::{
+        hash_map::{self, Entry},
+        HashMap,
+    },
+    mem,
+    sync::Mutex,
+};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use string_interner::{backend::{StringBackend, Backend}, StringInterner, Symbol};
+use string_interner::{
+    backend::{Backend, StringBackend},
+    StringInterner, Symbol,
+};
 use thiserror::Error;
 
 use super::{NodeId, Taxonomy, TaxonomyMut, TopologyReplacer};
@@ -69,7 +79,8 @@ impl GenericTaxonomy {
 
         let check2 = || {
             self.parent_ids.iter().all(|(&child, &parent)| {
-                let r = self.children_lookup
+                let r = self
+                    .children_lookup
                     .get(&parent)
                     .map_or(false, |children| children.contains(&child));
 
@@ -105,17 +116,20 @@ impl Taxonomy for GenericTaxonomy {
 
         if let Some(value) = &*cache {
             *value
-
         } else {
-            let mut leaves_depths = self.postorder_descendants(self.get_root())
+            let mut leaves_depths = self
+                .postorder_descendants(self.get_root())
                 .filter(|node| self.is_leaf(*node))
                 .map(|node| self.ancestors(node).count())
                 .peekable();
 
-            let &depth = leaves_depths.peek()
-                .expect("The tree has no leaves");
+            let &depth = leaves_depths.peek().expect("The tree has no leaves");
 
-            let value = if leaves_depths.all_equal() { Some(depth) } else { None };
+            let value = if leaves_depths.all_equal() {
+                Some(depth)
+            } else {
+                None
+            };
             *cache = Some(value);
             value
         }
@@ -162,7 +176,7 @@ impl Taxonomy for GenericTaxonomy {
 
     fn node_ranks(&self) -> Self::NodeRanks<'_> {
         CopiedRanksTupleIter {
-            inner: self.ranks.ranks.iter()
+            inner: self.ranks.ranks.iter(),
         }
     }
 }
@@ -179,7 +193,9 @@ where
     type Item = (T, RankSymbol);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(a, b)| (*a, RankSymbol::try_from_usize(*b as usize).unwrap()))
+        self.inner
+            .next()
+            .map(|(a, b)| (*a, RankSymbol::try_from_usize(*b as usize).unwrap()))
     }
 }
 
@@ -213,7 +229,6 @@ impl TaxonomyMut for GenericTaxonomy {
         r
     }
 }
-
 
 #[derive(Default)]
 pub struct GenericTaxonomyBuilder {
@@ -249,20 +264,30 @@ impl GenericTaxonomyBuilder {
     }
 
     pub fn set_rank(&mut self, node: NodeId, rank: &str) {
-        self.ranks.ranks.insert(node, self.ranks.interner.get_or_intern(rank).to_usize() as u32);
+        self.ranks.ranks.insert(
+            node,
+            self.ranks.interner.get_or_intern(rank).to_usize() as u32,
+        );
     }
 
     pub fn insert_edge(&mut self, parent: NodeId, child: NodeId) -> Result<(), TaxonomyBuildError> {
         match self.parent_ids.entry(child) {
             Entry::Vacant(vac) => {
                 vac.insert(parent);
-            },
+            }
             Entry::Occupied(occ) => {
-                return Err(TaxonomyBuildError::MultipleParents(child, parent, *occ.get()));
-            },
+                return Err(TaxonomyBuildError::MultipleParents(
+                    child,
+                    parent,
+                    *occ.get(),
+                ));
+            }
         }
 
-        self.children_lookup.entry(parent).or_insert_with(Vec::new).push(child);
+        self.children_lookup
+            .entry(parent)
+            .or_insert_with(Vec::new)
+            .push(child);
 
         Ok(())
     }

@@ -1,16 +1,20 @@
 use std::{
     collections::HashMap,
     error::Error,
+    fs::File,
     io::{self, Read, Write},
-    string::FromUtf8Error, path::Path, fs::File, iter, slice,
+    iter,
+    path::Path,
+    slice,
+    string::FromUtf8Error,
 };
 
 use itertools::Itertools;
 use newick_rs::{newick, SimpleTree};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::taxonomy::{NodeId, Taxonomy, LabelledTaxonomy};
+use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewickTaxonomy {
@@ -84,7 +88,7 @@ impl NewickTaxonomy {
         let mut stack = vec![StackFrame::new(root, value.children)];
 
         let mut parent_ids = vec![root];
-        let mut children_lookup = vec!(vec![]);
+        let mut children_lookup = vec![vec![]];
 
         while let (depth, Some(frame)) = (stack.len(), stack.last_mut()) {
             if let Some(child) = frame.orig_children_iter.next() {
@@ -115,7 +119,10 @@ impl NewickTaxonomy {
         }
     }
 
-    pub fn load_newick(path: impl AsRef<Path>, ranks: Vec<String>) -> Result<Self, NewickLoadError> {
+    pub fn load_newick(
+        path: impl AsRef<Path>,
+        ranks: Vec<String>,
+    ) -> Result<Self, NewickLoadError> {
         let simple_tree = read_newick_simple_tree(File::open(path)?)?;
 
         Ok(Self::from_simple_tree(simple_tree, ranks))
@@ -140,7 +147,8 @@ impl Taxonomy for NewickTaxonomy {
     }
 
     fn has_uniform_depths(&self) -> Option<usize> {
-        let mut depths = self.all_nodes()
+        let mut depths = self
+            .all_nodes()
             .filter(|&node| self.is_leaf(node))
             .map(|node| self.depths[node.0])
             .peekable();
@@ -260,7 +268,7 @@ mod tests {
     use itertools::Itertools;
     use newick_rs::SimpleTree;
 
-    use crate::taxonomy::{formats::newick::NewickTaxonomy, Taxonomy, LabelledTaxonomy};
+    use crate::taxonomy::{formats::newick::NewickTaxonomy, LabelledTaxonomy, Taxonomy};
 
     macro_rules! newick_literal {
         ([ $($trees:tt),+ ] $name:expr) => {
@@ -288,9 +296,9 @@ mod tests {
     fn ancestors() {
         fn chain(n: u32) -> SimpleTree {
             if n == 0 {
-                newick_literal!( 0u32 )
+                newick_literal!(0u32)
             } else {
-                let sub = chain(n-1);
+                let sub = chain(n - 1);
                 newick_literal!( [ (sub) ] n )
             }
         }
@@ -311,8 +319,8 @@ mod tests {
 
     #[test]
     fn postorder_descendants() {
-        let sub = newick_literal!{ [1i32, 2i32] 3i32 };
-        let simple_t = newick_literal!{ [ 0i32, (sub) ] 4i32 };
+        let sub = newick_literal! { [1i32, 2i32] 3i32 };
+        let simple_t = newick_literal! { [ 0i32, (sub) ] 4i32 };
 
         let ranks = "a,b,c".split(',').map(|s| s.to_owned()).collect_vec();
 
@@ -330,8 +338,8 @@ mod tests {
 
     #[test]
     fn preorder_edges() {
-        let sub = newick_literal!{ [1i32, 2i32] 3i32 };
-        let simple_t = newick_literal!{ [ 0i32, (sub) ] 4i32 };
+        let sub = newick_literal! { [1i32, 2i32] 3i32 };
+        let simple_t = newick_literal! { [ 0i32, (sub) ] 4i32 };
 
         let ranks = "a,b,c".split(',').map(|s| s.to_owned()).collect_vec();
 
@@ -347,8 +355,8 @@ mod tests {
 
     #[test]
     fn lca() {
-        let sub = newick_literal!{ [1i32, 2i32] 3i32 };
-        let simple_t = newick_literal!{ [ 0i32, (sub) ] 4i32 };
+        let sub = newick_literal! { [1i32, 2i32] 3i32 };
+        let simple_t = newick_literal! { [ 0i32, (sub) ] 4i32 };
 
         // [0, [1, 2] 3] 4
 
