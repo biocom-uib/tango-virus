@@ -278,9 +278,9 @@ where
     })
 }
 
-fn ncbi_taxonomy_lookup_taxid_leaf<'a, Names: 'static + NamesAssoc + Send>(
-    tax: &'a NcbiTaxonomy<Names>,
-) -> impl Fn(&str) -> Vec<NodeId> + 'a {
+fn ncbi_taxonomy_lookup_taxid_leaf<Names: 'static + NamesAssoc + Send>(
+    tax: &NcbiTaxonomy<Names>,
+) -> impl Fn(&str) -> Vec<NodeId> + '_ {
     |name: &str| {
         let mut v = name
             .parse()

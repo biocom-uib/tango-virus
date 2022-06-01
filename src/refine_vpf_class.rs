@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::Args;
+use clap::{Args, ArgEnum};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize, Serializer};
 use thiserror::Error;
@@ -61,6 +61,10 @@ pub struct RefineVpfClassArgs {
     /// '--output -').
     #[clap(long)]
     print_summary: bool,
+
+    /// Column to sort --print-summary by
+    #[clap(long, requires = "print-summary", arg_enum, default_value_t = SummarySortBy::VirusCount)]
+    summary_sort_by: SummarySortBy,
 }
 
 impl RefineVpfClassArgs {
@@ -125,11 +129,11 @@ impl RankAssignments {
     }
 }
 
-fn load_rank_assignments<Tax: Taxonomy, P: AsRef<Path>>(
+fn load_rank_assignments<Tax: Taxonomy>(
     tax: &Tax,
     rank_sym: Tax::RankSym,
     include_descendants: bool,
-    assignments_path: P,
+    assignments_path: &Path,
 ) -> Result<RankAssignments> {
     let csv_reader = csv::ReaderBuilder::new()
         .has_headers(true)
@@ -193,11 +197,11 @@ fn load_rank_assignments<Tax: Taxonomy, P: AsRef<Path>>(
 
 #[derive(Serialize, Deserialize)]
 struct VpfClassRecord {
-    virus_name: String,
-    class_name: String,
-    membership_ratio: f64,
-    virus_hit_score: f64,
-    confidence_score: f64,
+    pub virus_name: String,
+    pub class_name: String,
+    pub membership_ratio: f64,
+    pub virus_hit_score: f64,
+    pub confidence_score: f64,
 }
 
 enum VpfClassRecordFieldValue {
@@ -343,63 +347,86 @@ fn enrich_vpf_class_record<'a, Tax: LabelledTaxonomy>(
     }
 }
 
-#[derive(Default)]
-struct ClassFreqs {
-    freqs: HashMap<String, usize>,
+#[derive(Default, Serialize)]
+struct ClassStats<'a> {
+    virus_count: u32,
+    assigned_taxids: HashSet<NodeId>,
+    assigned_contigs: HashSet<&'a str>
 }
 
-impl ClassFreqs {
-    fn add(&mut self, class_name: &str) {
-        *self
-            .freqs
+impl<'a> ClassStats<'a> {
+    fn add(&mut self, record: &EnrichedVpfClassRecord<'a>) {
+        self.virus_count += 1;
+        self.assigned_taxids.extend(&record.assigned_taxids);
+        self.assigned_contigs.extend(&record.assigned_contigs);
+    }
+}
+
+#[derive(ArgEnum, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum SummarySortBy {
+    ClassName,
+    VirusCount,
+    AssignedTaxIds,
+    AssignedContigs,
+}
+
+#[derive(Default)]
+struct EnrichmentSummary<'a> {
+    class_stats: HashMap<String, ClassStats<'a>>,
+}
+
+impl<'a> EnrichmentSummary<'a> {
+    fn account(&mut self, record: &EnrichedVpfClassRecord<'a>) {
+        let class_name = &*record.vpf_class_record.class_name;
+
+        self
+            .class_stats
             .raw_entry_mut()
             .from_key(class_name)
-            .or_insert_with(|| (class_name.to_owned(), 0))
-            .1 += 1;
-    }
-}
-
-fn collect_frequencies<'a, 'b, I>(
-    freqs: &'b mut ClassFreqs,
-    refinement: I,
-) -> impl Iterator<Item = EnrichedVpfClassRecord<'a>> + 'b
-where
-    'a: 'b,
-    I: Iterator<Item = EnrichedVpfClassRecord<'a>> + 'b,
-{
-    refinement.inspect(|record| {
-        freqs.add(&record.vpf_class_record.class_name);
-    })
-}
-
-fn write_frequencies<W: io::Write>(writer: W, freqs: &ClassFreqs) -> csv::Result<()> {
-    #[derive(Serialize)]
-    struct ClassFreq<'a> {
-        class_name: &'a str,
-        count: usize,
+            .or_insert_with(|| (class_name.to_owned(), ClassStats::default()))
+            .1
+            .add(record);
     }
 
-    let mut class_freqs = freqs
-        .freqs
-        .iter()
-        .map(|(class_name, count)| ClassFreq {
-            class_name: &*class_name,
-            count: *count,
-        })
-        .collect_vec();
-    class_freqs.sort_by_key(|a| -(a.count as i64));
+    fn write<W: io::Write>(self, writer: W, sort: SummarySortBy) -> csv::Result<()> {
+        #[derive(Serialize)]
+        struct Record {
+            class_name: String,
+            virus_count: i32,
+            assigned_taxids: i32,
+            assigned_contigs: i32,
+        }
 
-    let mut csv_writer = csv::WriterBuilder::new()
-        .has_headers(true)
-        .delimiter(b'\t')
-        .from_writer(writer);
+        let mut records = self
+            .class_stats
+            .into_iter()
+            .map(|(class_name, stats)| Record {
+                class_name,
+                virus_count: stats.virus_count as i32,
+                assigned_taxids: stats.assigned_taxids.len() as i32,
+                assigned_contigs: stats.assigned_contigs.len() as i32,
+            })
+            .collect_vec();
 
-    for freq in class_freqs {
-        csv_writer.serialize(&freq)?;
+        match sort {
+            SummarySortBy::ClassName => records.sort_by(|r1, r2| r1.class_name.cmp(&r2.class_name)),
+            SummarySortBy::VirusCount => records.sort_by_key(|r| -r.virus_count),
+            SummarySortBy::AssignedTaxIds => records.sort_by_key(|r| -r.assigned_taxids),
+            SummarySortBy::AssignedContigs => records.sort_by_key(|r| -r.assigned_contigs),
+        }
+
+        let mut csv_writer = csv::WriterBuilder::new()
+            .has_headers(true)
+            .delimiter(b'\t')
+            .from_writer(writer);
+
+        for row in records {
+            csv_writer.serialize(&row)?;
+        }
+
+        csv_writer.flush()?;
+        Ok(())
     }
-
-    csv_writer.flush()?;
-    Ok(())
 }
 
 fn write_refined_output<'a, W, I>(writer: W, refinement: I) -> Result<()>
@@ -426,11 +453,8 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
         );
     }
 
-    let filters: Vec<VpfClassRecordFilter> = args
-        .filter
-        .iter()
-        .map(|f| VpfClassRecordFilter::parse_filter(&f))
-        .try_collect()?;
+    let filters = VpfClassRecordFilter::parse_filters(&args.filter)
+        .context("Error parsing --filter")?;
 
     let rank = args.get_or_infer_rank().ok_or_else(|| {
         anyhow::anyhow!(
@@ -453,7 +477,7 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
             tax,
             rank_sym,
             args.include_descendants,
-            &args.metagenomic_assignment,
+            args.metagenomic_assignment.as_ref(),
         )
         .context("Error collecting metagenomic assignment taxids")?;
 
@@ -473,15 +497,15 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
                 .filter_map(|record| enrich_vpf_class_record(tax, rank_sym, &rank_assignments, args.allow_different_ranks, record));
 
             if args.print_summary {
-                let mut freqs = ClassFreqs::default();
+                let mut summary = EnrichmentSummary::default();
 
-                let refinement = collect_frequencies(&mut freqs, refinement);
+                let refinement = refinement.inspect(|record| summary.account(record));
 
                 writing_new_file_or_stdout!(&args.output, writer => {
                     write_refined_output(writer, refinement)?;
                 });
 
-                write_frequencies(io::stdout(), &freqs)?;
+                summary.write(io::stdout(), args.summary_sort_by)?;
 
             } else {
                 writing_new_file_or_stdout!(&args.output, writer => {

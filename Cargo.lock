@@ -1267,7 +1267,6 @@ dependencies = [
  "csv",
  "extended-rational",
  "itertools",
- "lazy_static",
  "newick-rs",
  "ordered-float",
  "polars",

@@ -19,9 +19,8 @@ use crate::filter::{FromStrFilter, Op};
 use crate::util::writing_new_file_or_stdout;
 
 pub mod fields {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, lazy::SyncLazy};
 
-    use lazy_static::lazy_static;
     use polars::datatypes::DataType;
 
     pub const QSEQID: (&str, DataType) = ("qseqid", DataType::Utf8);
@@ -75,8 +74,8 @@ pub mod fields {
     pub const QCOVHSP: (&str, DataType) = ("qcovhsp", DataType::Float32);
     pub const QCOVUS: (&str, DataType) = ("qcovus", DataType::Float32);
 
-    lazy_static! {
-        pub static ref FIELD_TYPES: HashMap<&'static str, DataType> = HashMap::from([
+    pub static FIELD_TYPES: SyncLazy<HashMap<&'static str, DataType>> = SyncLazy::new(|| {
+        HashMap::from([
             QSEQID,
             QGI,
             QACC,
@@ -127,8 +126,8 @@ pub mod fields {
             QCOVS,
             QCOVHSP,
             QCOVUS
-        ]);
-    }
+        ])
+    });
 
     pub const DEFAULT_BLASTN_COLUMNS: &[&str] = &[
         QACCVER.0, SACCVER.0, PIDENT.0, LENGTH.0, MISMATCH.0, GAPOPEN.0, QSTART.0, QEND.0,
@@ -320,7 +319,7 @@ impl FromStrFilter for BlastOutFilter {
     }
 }
 
-fn apply_filters(df: LazyFrame, filters: impl IntoIterator<Item = BlastOutFilter>) -> LazyFrame {
+fn apply_filters(df: LazyFrame, filters: Vec<BlastOutFilter>) -> LazyFrame {
     if let Some(filter) = filters.into_iter().map(|filter| filter.0).reduce(Expr::and) {
         df.filter(filter)
     } else {
@@ -404,7 +403,7 @@ fn group_blast_hits_with_weights(
     hits: LazyFrame,
     query_id_col: &str,
     subject_id_col: &str,
-    weight_col: &str, // may not be present, it's ok
+    weight_col: &str,
     weight_col_agg: impl FnOnce(Expr) -> Expr,
 ) -> LazyFrame {
     let zipped_subject_col = format!("{subject_id_col}/{weight_col}");
@@ -451,11 +450,8 @@ pub fn preprocess_blastout(args: PreprocessBlastOutArgs) -> anyhow::Result<()> {
 
         eprintln!("Loaded BLAST+ output with schema {:?}", df.schema());
 
-        let filters: Vec<_> = args
-            .filter
-            .iter()
-            .map(|f| BlastOutFilter::parse_filter(f))
-            .try_collect()?;
+        let filters =
+            BlastOutFilter::parse_filters(&args.filter).context("Error parsing --filter")?;
 
         apply_filters(df, filters)
     };

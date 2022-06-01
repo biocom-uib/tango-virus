@@ -54,7 +54,7 @@ impl Default for PreprocessedTaxonomyFormat {
 }
 
 macro_rules! with_some_taxonomy {
-    ($some_taxonomy:expr, $tax:pat => $body:expr) => {
+    ($some_taxonomy:expr, $tax:pat => $body:expr $(,)?) => {
         match $some_taxonomy {
             SomeTaxonomy::NcbiTaxonomyWithSingleClassNames($tax) => $body,
             SomeTaxonomy::NcbiTaxonomyWithManyNames($tax) => $body,
@@ -68,6 +68,7 @@ macro_rules! with_some_ncbi_or_newick_taxonomy {
         $some_taxonomy:expr,
         ncbi: $ncbi_tax:pat => $ncbi_body:expr,
         newick: $newick_tax:pat => $newick_body:expr
+        $(,)?
     ) => {
         match $some_taxonomy {
             SomeTaxonomy::NcbiTaxonomyWithSingleClassNames($ncbi_tax) => $ncbi_body,

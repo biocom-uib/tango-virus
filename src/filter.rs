@@ -1,7 +1,7 @@
-use lazy_static::lazy_static;
 use regex::Regex;
 use std::error::Error;
 use std::fmt::Debug;
+use std::lazy::SyncLazy;
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -74,12 +74,11 @@ pub trait FromStrFilter: Sized {
     type Err: Error + 'static;
     fn try_from_parts(key: &str, op: Op, value: &str) -> Result<Self, Self::Err>;
 
-    fn parse_filter<F: FromStrFilter>(filter_str: &str) -> Result<F, FilterParseError<F>> {
+    fn parse_filter(filter_str: &str) -> Result<Self, FilterParseError<Self>> {
         use FilterParseError::*;
 
-        lazy_static! {
-            static ref RE: Regex = Regex::new(r"^(\w+)\s*([><]?=?)\s*(\S+)$").unwrap();
-        }
+        static RE: SyncLazy<Regex> =
+            SyncLazy::new(|| Regex::new(r"^(\w+)\s*([><]?=?)\s*(\S+)$").unwrap());
 
         let cap = RE
             .captures(filter_str)
@@ -93,6 +92,17 @@ pub trait FromStrFilter: Sized {
 
         let value_str = &cap[3];
 
-        F::try_from_parts(key, op, value_str).map_err(|e| BuildError(filter_str.to_owned(), e))
+        Self::try_from_parts(key, op, value_str).map_err(|e| BuildError(filter_str.to_owned(), e))
+    }
+
+    fn parse_filters<I, S>(filter_strs: I) -> Result<Vec<Self>, FilterParseError<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        filter_strs
+            .into_iter()
+            .map(|f| Self::parse_filter(f.as_ref()))
+            .collect()
     }
 }

@@ -5,6 +5,7 @@
     hash_set_entry,
     io_read_to_string,
     iterator_try_reduce,
+    once_cell,
     never_type
 )]
 
