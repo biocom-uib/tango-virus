@@ -1,4 +1,4 @@
-# TANGO-Virus
+# Meteor
 
 ## Build instructions
 
@@ -9,17 +9,17 @@ can be installed easily as follows (this includes `cargo`):
 curl https://sh.rustup.rs -sSf | sh -s -- --profile minimal --default-toolchain nightly
 ```
 
-Then you can install `tango-virus` as follows (by default, it is installed in
+Then you can install `meteor` as follows (by default, it is installed in
 `~/.cargo/bin`):
 
 ```
-cargo install --git https://github.com/biocom-uib/tango-virus
+cargo install --git https://github.com/biocom-uib/meteor
 ```
 
 ## Usage
 
-TANGO-Virus has four main subcommands, which are usually run the same order as
-explained. To obtain more information on each command, use `tango-virus
+Meteor has four main subcommands, which are usually run the same order as
+explained. To obtain more information on each command, use `meteor
 <subcommand> --help`.
 
 ### `preprocess-taxonomy`
@@ -30,7 +30,7 @@ NCBI's). To use the NCBI taxonomy, download and extract it (it can be found
 the extracted taxonomy is in `/path/to/taxdump/`, you could run
 
 ```
-tango-virus preprocess-taxonomy /path/to/taxdump/ --contract preprocessed_taxonomy.cbor
+meteor preprocess-taxonomy /path/to/taxdump/ --contract preprocessed_taxonomy.cbor
 ```
 
 _Note that this step only needs to be run once per taxonomy update._
@@ -43,7 +43,7 @@ executed using `-outfmt '6 qseqid staxid'` or `-outfmt '7 qseqid staxid'`
 and, for instance, `-db nt`:
 
 ```
-tango-virus preprocess-blastout /path/to/blast/hits.out \
+meteor preprocess-blastout /path/to/blast/hits.out \
     --blast-outfmt '7 qseqid staxid' \
     --query-id-col qseqid \
     --subject-id-col staxid \
@@ -65,7 +65,7 @@ from the `preprocess-taxonomy` step and the output from `preprocess-blastout`.
 To run it, execute
 
 ```
-tango-virus assign preprocessed_taxonomy.cbor preprocessed_hits.tsv \
+meteor assign preprocessed_taxonomy.cbor preprocessed_hits.tsv \
     -q 0.5 -o assignment.tsv
 ```
 
@@ -78,13 +78,13 @@ refines it to include only ascendants from taxonomic nodes found in the
 the refinement of the `host_genus` prediction can be done as follows:
 
 ```
-tango-virus refine-vpf-class preprocessed_taxonomy.cbor assignment.tsv \
+meteor refine-vpf-class preprocessed_taxonomy.cbor assignment.tsv \
     /path/to/vpf-class/output/host_genus.tsv \
     -o refined_host_genus.tsv
 ```
 
-(*TODO*) The output contains two additional columns: for each VPF-Class
-prediction, `assignments` is a semicolon-separated list of `taxid`s found in
+The output contains two additional columns: for each VPF-Class prediction,
+`assigned_taxids` is a semicolon-separated list of `taxid`s found in
 `assignment.tsv` which are descendants of this prediction and
 `assigned_contigs` is a semicolon-separated list of the metagenomic contigs
 that were grouped as those descendants.

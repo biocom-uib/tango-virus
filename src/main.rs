@@ -29,7 +29,7 @@ enum Commands {
     RefineVpfClass(refine_vpf_class::RefineVpfClassArgs),
 }
 
-/// Rust port of TANGO: Taxonomic Assignment in Metagenomics
+/// METEOR: Metagenome and Metavirome Joint Analysis
 #[derive(Parser)]
 struct Cli {
     #[clap(subcommand)]

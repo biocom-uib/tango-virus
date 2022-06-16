@@ -635,6 +635,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "meteor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossbeam",
+ "csv",
+ "extended-rational",
+ "itertools",
+ "newick-rs",
+ "ordered-float",
+ "polars",
+ "polars-io",
+ "polars-lazy",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_cbor",
+ "serde_json",
+ "serde_with",
+ "string-interner",
+ "thiserror",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1255,31 +1280,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
-]
-
-[[package]]
-name = "tango-virus"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossbeam",
- "csv",
- "extended-rational",
- "itertools",
- "newick-rs",
- "ordered-float",
- "polars",
- "polars-io",
- "polars-lazy",
- "rayon",
- "regex",
- "serde",
- "serde_cbor",
- "serde_json",
- "serde_with",
- "string-interner",
- "thiserror",
 ]
 
 [[package]]
