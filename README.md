@@ -6,14 +6,18 @@ First, you will need `cargo`. To install it, we recommend using `rustup`, which
 can be installed easily as follows (this includes `cargo`):
 
 ```
-curl https://sh.rustup.rs -sSf | sh -s -- --profile minimal --default-toolchain nightly
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --profile minimal --default-toolchain nightly
 ```
 
-Then you can install `meteor` as follows (by default, it is installed in
-`~/.cargo/bin`):
+_Note: You may need some basic packages. These include, at least, `curl` and
+`gcc`/`clang`._
+
+Then you can restart your terminal and install `meteor` as follows (by default,
+it is installed in `~/.cargo/bin`):
+
 
 ```
-cargo install --git https://github.com/biocom-uib/meteor
+cargo +nightly install --git https://github.com/biocom-uib/meteor
 ```
 
 ## Usage
@@ -88,3 +92,12 @@ The output contains two additional columns: for each VPF-Class prediction,
 `assignment.tsv` which are descendants of this prediction and
 `assigned_contigs` is a semicolon-separated list of the metagenomic contigs
 that were grouped as those descendants.
+
+
+## Uninstallation
+
+Simply remove `~/.cargo/bin/meteor`. If you wish to uninstall `rustup` too, run
+
+```
+rustup self uninstall
+```
