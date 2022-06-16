@@ -448,7 +448,7 @@ where
 
 pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
     if args.print_summary && args.output == "-" {
-        anyhow::anyhow!(
+        anyhow::bail!(
             "--output - is incompatible with --print-summary. Use --output /path/to/file instead."
         );
     }
