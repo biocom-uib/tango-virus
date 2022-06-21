@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, ArgEnum};
 use itertools::Itertools;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
@@ -195,7 +195,7 @@ fn load_rank_assignments<Tax: Taxonomy>(
     Ok(assignments)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct VpfClassRecord {
     pub virus_name: String,
     pub class_name: String,
@@ -260,14 +260,9 @@ impl FromStrFilter for VpfClassRecordFilter {
     }
 }
 
-#[derive(Serialize)]
 struct EnrichedVpfClassRecord<'a> {
-    #[serde(flatten)]
     vpf_class_record: VpfClassRecord,
-
-    #[serde(serialize_with = "serialize_assigned_taxids")]
     assigned_taxids: HashSet<NodeId>,
-    #[serde(serialize_with = "serialize_assigned_contigs")]
     assigned_contigs: HashSet<&'a str>,
 }
 
@@ -285,19 +280,31 @@ impl<'a> EnrichedVpfClassRecord<'a> {
     }
 }
 
-fn serialize_assigned_taxids<S: Serializer>(
-    taxids: &HashSet<NodeId>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(&taxids.iter().map(|id| id.to_string()).join(";"))
+#[derive(Debug, Serialize)]
+struct CsvEnrichedVpfClassRecord {
+    virus_name: String,
+    class_name: String,
+    membership_ratio: f64,
+    virus_hit_score: f64,
+    confidence_score: f64,
+    assigned_taxids: String,
+    assigned_contigs: String,
 }
 
-fn serialize_assigned_contigs<S: Serializer>(
-    contigs: &HashSet<&str>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str(&contigs.iter().join(";"))
+impl<'a> From<EnrichedVpfClassRecord<'a>> for CsvEnrichedVpfClassRecord {
+    fn from(other: EnrichedVpfClassRecord<'a>) -> Self {
+        CsvEnrichedVpfClassRecord {
+            virus_name: other.vpf_class_record.virus_name,
+            class_name: other.vpf_class_record.class_name,
+            membership_ratio: other.vpf_class_record.membership_ratio,
+            virus_hit_score: other.vpf_class_record.virus_hit_score,
+            confidence_score: other.vpf_class_record.confidence_score,
+            assigned_taxids: other.assigned_taxids.iter().map(|taxid| taxid.to_string()).join(";"),
+            assigned_contigs: other.assigned_taxids.iter().join(";"),
+        }
+    }
 }
+
 
 fn enrich_vpf_class_record<'a, Tax: LabelledTaxonomy>(
     tax: &'a Tax,
@@ -440,7 +447,8 @@ where
         .from_writer(writer);
 
     for record in refinement {
-        csv_writer.serialize(record)?;
+        let serializable_record = CsvEnrichedVpfClassRecord::from(record);
+        csv_writer.serialize(&serializable_record)?;
     }
 
     Ok(())
@@ -489,7 +497,8 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
         let csv_reader = csv::ReaderBuilder::new()
             .has_headers(true)
             .delimiter(b'\t')
-            .from_path(&args.vpf_class_prediction)?;
+            .from_path(&args.vpf_class_prediction)
+            .context("Could not open VPF-Class prediction")?;
 
         itertools::process_results(csv_reader.into_deserialize(), |records| {
             let refinement = records
@@ -502,14 +511,17 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
                 let refinement = refinement.inspect(|record| summary.account(record));
 
                 writing_new_file_or_stdout!(&args.output, writer => {
-                    write_refined_output(writer, refinement)?;
+                    write_refined_output(writer, refinement)
+                        .context("Error writing refined output")?;
                 });
 
-                summary.write(io::stdout(), args.summary_sort_by)?;
+                summary.write(io::stdout(), args.summary_sort_by)
+                    .context("Error writing summary")?;
 
             } else {
                 writing_new_file_or_stdout!(&args.output, writer => {
-                    write_refined_output(writer, refinement)?;
+                    write_refined_output(writer, refinement)
+                        .context("Error writing refined output")?;
                 });
             }
 
