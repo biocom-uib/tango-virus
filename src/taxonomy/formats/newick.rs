@@ -128,6 +128,10 @@ impl NewickTaxonomy {
         Ok(Self::from_simple_tree(simple_tree, ranks))
     }
 
+    pub fn has_node(&self, node: usize) -> bool {
+        node < self.parent_ids.len()
+    }
+
     pub fn all_nodes(&self) -> impl Iterator<Item = NodeId> {
         (0..self.parent_ids.len()).map(NodeId)
     }
@@ -136,6 +140,14 @@ impl NewickTaxonomy {
 impl Taxonomy for NewickTaxonomy {
     fn get_root(&self) -> NodeId {
         self.root
+    }
+
+    fn fixup_node(&self, node: usize) -> Option<NodeId> {
+        if self.has_node(node) {
+            Some(NodeId(node))
+        } else {
+            None
+        }
     }
 
     fn find_parent(&self, node: NodeId) -> Option<NodeId> {

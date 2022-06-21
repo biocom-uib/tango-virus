@@ -27,8 +27,16 @@ impl FromStr for NodeId {
     }
 }
 
+impl From<NodeId> for usize {
+    fn from(node: NodeId) -> Self {
+        node.0
+    }
+}
+
 pub trait Taxonomy: Sized {
     fn get_root(&self) -> NodeId;
+
+    fn fixup_node(&self, node: usize) -> Option<NodeId>;
 
     fn is_leaf(&self, node: NodeId) -> bool {
         self.iter_children(node).next().is_none()
@@ -82,6 +90,7 @@ pub trait Taxonomy: Sized {
         util::topsort::<Self::RankSym, HashSet<Self::RankSym>>(&rank_graph)
     }
 
+    /// Does not include node
     fn ancestors(&self, node: NodeId) -> AncestorsIter<'_, Self> {
         AncestorsIter {
             taxo: self,

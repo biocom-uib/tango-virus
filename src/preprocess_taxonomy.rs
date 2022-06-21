@@ -108,6 +108,7 @@ impl PreprocessedTaxonomy {
     }
 }
 
+/// Load, preprocess and serialize a taxonomy for further Meteor usage.
 #[derive(Args)]
 pub struct PreprocessTaxonomyArgs {
     /// Enables contraction. If provided, RANKS should be a comma-separated list of the ranks to keep after contraction.

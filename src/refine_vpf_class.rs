@@ -21,6 +21,8 @@ use crate::{
     util::writing_new_file_or_stdout,
 };
 
+/// Refine a VPF-Class host prediction to include only ascendants from taxonomic nodes found in a
+/// metagenomic assignment.
 #[derive(Args)]
 pub struct RefineVpfClassArgs {
     #[clap(long, arg_enum, default_value_t)]
@@ -63,7 +65,7 @@ pub struct RefineVpfClassArgs {
     print_summary: bool,
 
     /// Column to sort --print-summary by
-    #[clap(long, requires = "print-summary", arg_enum, default_value_t = SummarySortBy::VirusCount)]
+    #[clap(long, arg_enum, default_value_t = SummarySortBy::VirusCount)]
     summary_sort_by: SummarySortBy,
 }
 
@@ -152,7 +154,8 @@ fn load_rank_assignments<Tax: Taxonomy>(
 
         if let Some(valid_ancestor) = valid_ancestor {
             assignments.add_descendant_from_rank(valid_ancestor, node);
-            assignments.add_contig_for_rank(valid_ancestor, record.assigned_name);
+            assignments.add_contig_for_rank(valid_ancestor, record.query_id);
+
         } else if include_descendants {
             let mut valid_descendants = tax
                 .postorder_descendants(node)
@@ -162,7 +165,7 @@ fn load_rank_assignments<Tax: Taxonomy>(
             if valid_descendants.peek().is_some() {
                 for valid_descendant in valid_descendants {
                     assignments.add_ascendant_at_rank(valid_descendant, node);
-                    assignments.add_contig_for_rank_cloned(valid_descendant, &record.assigned_name);
+                    assignments.add_contig_for_rank_cloned(valid_descendant, &record.query_id);
                 }
             } else {
                 assignments.dropped_records += 1;
@@ -251,8 +254,8 @@ impl FromStrFilter for VpfClassRecordFilter {
             "virus_name" => VirusName(value.to_owned()),
             "class_name" => ClassName(value.to_owned()),
             "membership_ratio" => MembershipRatio(value.parse()?),
-            "VirusHitScore" => VirusHitScore(value.parse()?),
-            "ConfidenceScore" => ConfidenceScore(value.parse()?),
+            "virus_hit_score" => VirusHitScore(value.parse()?),
+            "confidence_score" => ConfidenceScore(value.parse()?),
             _ => return Err(UnknownField(key.to_owned())),
         };
 
@@ -288,7 +291,7 @@ struct CsvEnrichedVpfClassRecord {
     virus_hit_score: f64,
     confidence_score: f64,
     assigned_taxids: String,
-    assigned_contigs: String,
+    num_assigned_contigs: usize,
 }
 
 impl<'a> From<EnrichedVpfClassRecord<'a>> for CsvEnrichedVpfClassRecord {
@@ -299,8 +302,8 @@ impl<'a> From<EnrichedVpfClassRecord<'a>> for CsvEnrichedVpfClassRecord {
             membership_ratio: other.vpf_class_record.membership_ratio,
             virus_hit_score: other.vpf_class_record.virus_hit_score,
             confidence_score: other.vpf_class_record.confidence_score,
-            assigned_taxids: other.assigned_taxids.iter().map(|taxid| taxid.to_string()).join(";"),
-            assigned_contigs: other.assigned_taxids.iter().join(";"),
+            assigned_taxids: other.assigned_taxids.iter().join(";"),
+            num_assigned_contigs: other.assigned_contigs.len(),
         }
     }
 }

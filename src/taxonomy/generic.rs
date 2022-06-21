@@ -103,6 +103,14 @@ impl Taxonomy for GenericTaxonomy {
         self.root
     }
 
+    fn fixup_node(&self, node: usize) -> Option<NodeId> {
+        if self.has_node(NodeId(node)) {
+            Some(NodeId(node))
+        } else {
+            None
+        }
+    }
+
     fn is_leaf(&self, node: NodeId) -> bool {
         if let Some(ch) = self.children_lookup.get(&node) {
             ch.is_empty()

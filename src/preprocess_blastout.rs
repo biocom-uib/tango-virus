@@ -162,6 +162,8 @@ impl WeightColAgg {
     }
 }
 
+/// Load the output of NCBI's BLAST+ (blastn) to produce a suitable input file for the assign
+/// subcommand.
 #[derive(Args)]
 pub struct PreprocessBlastOutArgs {
     /// Path to the BLAST+ output file. STDIN is not supported.

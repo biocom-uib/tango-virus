@@ -144,6 +144,7 @@ fn assign_reads(ann_map: &TaxonomyAnnotations, q: Rational) -> (Vec<NodeId>, Rat
     (min_nodes, min_penalty)
 }
 
+/// Produce a metagenomic assignment using the TANGO algorithm.
 #[derive(Args)]
 pub struct AssignArgs {
     #[clap(long, arg_enum, default_value_t)]
@@ -285,7 +286,6 @@ fn ncbi_taxonomy_lookup_taxid_leaf<Names: 'static + NamesAssoc + Send>(
         let mut v = name
             .parse()
             .into_iter()
-            .map(NodeId)
             .filter_map(|node| tax.fixup_node(node))
             .filter(|&node| tax.is_leaf(node))
             .collect_vec();

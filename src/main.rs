@@ -17,6 +17,7 @@ pub(crate) mod filter;
 pub(crate) mod util;
 
 mod assign;
+mod get_lineage;
 mod preprocess_blastout;
 mod preprocess_taxonomy;
 mod refine_vpf_class;
@@ -24,6 +25,7 @@ mod refine_vpf_class;
 #[derive(Subcommand)]
 enum Commands {
     PreprocessTaxonomy(preprocess_taxonomy::PreprocessTaxonomyArgs),
+    GetLineage(get_lineage::GetLineageArgs),
     PreprocessBlastout(preprocess_blastout::PreprocessBlastOutArgs),
     Assign(assign::AssignArgs),
     RefineVpfClass(refine_vpf_class::RefineVpfClassArgs),
@@ -42,6 +44,9 @@ fn main() -> anyhow::Result<()> {
     match args.command {
         Commands::PreprocessTaxonomy(args) => {
             preprocess_taxonomy::preprocess_taxonomy(args)?;
+        }
+        Commands::GetLineage(args) => {
+            get_lineage::get_lineage(args)?;
         }
         Commands::PreprocessBlastout(args) => {
             preprocess_blastout::preprocess_blastout(args)?;

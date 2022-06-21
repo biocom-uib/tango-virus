@@ -2,14 +2,14 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader},
-    path::Path,
+    path::Path, iter::Flatten,
 };
 
 use crate::taxonomy::{
     self, generic::GenericTaxonomy, ContractedNodes, LabelledTaxonomy, NodeId, Taxonomy,
     TaxonomyMut, TopologyReplacer,
 };
-use itertools::Either;
+
 use newick_rs::SimpleTree;
 use serde::{Deserialize, Serialize};
 use string_interner::backend::{Backend, StringBackend};
@@ -64,35 +64,6 @@ impl<Names> NcbiTaxonomy<Names> {
             merged_taxids: Some(merged),
             ..self
         })
-    }
-
-    // try to fix bad nodes into actual nodes either through merged NCBI taxids or known contracted
-    // nodes
-    pub fn fixup_node(&self, node: NodeId) -> Option<NodeId> {
-        if self.tree.has_node(node) {
-            return Some(node);
-        }
-
-        match (&self.merged_taxids, &self.contracted_taxids) {
-            (None, None) => None,
-
-            (Some(merged), None) => merged
-                .get(&node)
-                .copied()
-                .and_then(|node| self.fixup_node(node)),
-
-            (None, Some(contracted)) => contracted.0.get(&node).copied(),
-
-            (Some(merged), Some(contracted)) => {
-                if let Some(&fixed) = merged.get(&node) {
-                    self.fixup_node(fixed)
-                } else if let Some(&fixed) = contracted.0.get(&node) {
-                    self.fixup_node(fixed)
-                } else {
-                    None
-                }
-            }
-        }
     }
 
     pub fn topology_health_check(&self) -> bool {
@@ -166,6 +137,35 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
         self.tree.get_root()
     }
 
+    // try to fix bad nodes into actual nodes either through merged NCBI taxids or known contracted
+    // nodes
+    fn fixup_node(&self, node: usize) -> Option<NodeId> {
+        if let Some(node) = self.tree.fixup_node(node) {
+            return Some(node);
+        }
+
+        match (&self.merged_taxids, &self.contracted_taxids) {
+            (None, None) => None,
+
+            (Some(merged), None) => merged
+                .get(&NodeId(node))
+                .copied()
+                .and_then(|node| self.fixup_node(node.0)),
+
+            (None, Some(contracted)) => contracted.0.get(&NodeId(node)).copied(),
+
+            (Some(merged), Some(contracted)) => {
+                if let Some(&fixed) = merged.get(&NodeId(node)) {
+                    self.fixup_node(fixed.0)
+                } else if let Some(&fixed) = contracted.0.get(&NodeId(node)) {
+                    self.fixup_node(fixed.0)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     fn is_leaf(&self, node: TaxId) -> bool {
         self.tree.is_leaf(node)
     }
@@ -206,14 +206,14 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
 }
 
 impl<Names: NamesAssoc + Send + 'static> LabelledTaxonomy for NcbiTaxonomy<Names> {
-    type Labels<'a> = Either<std::iter::Empty<&'a str>, Names::NamesLookupIter<'a>>;
+    type Labels<'a> = Flatten<<Option<Names::NamesLookupIter<'a>> as IntoIterator>::IntoIter>;
 
     fn labels_of(&self, node: NodeId) -> Self::Labels<'_> {
-        if let Some(result) = self.names.lookup_names(node) {
-            Either::Right(Names::iter_lookup_names(result))
-        } else {
-            Either::Left(std::iter::empty())
-        }
+        self.names
+            .lookup_names(node)
+            .map(|lookup| Names::iter_lookup_names(lookup))
+            .into_iter()
+            .flatten()
     }
 
     type NodesWithLabel<'a> = NodesWithLabel<'a, Names>;
@@ -234,13 +234,13 @@ pub struct NodesWithLabel<'a, Names: NamesAssoc> {
     iter: Option<Names::TaxIdsLookupIter<'a>>,
 }
 
-impl<'a, Names: NamesAssoc> Iterator for NodesWithLabel<'a, Names> {
+impl<'a, Names: NamesAssoc + 'static> Iterator for NodesWithLabel<'a, Names> {
     type Item = TaxId;
 
     fn next(&mut self) -> Option<Self::Item> {
         let next = self.iter.as_mut()?.next()?;
 
-        self.tax.fixup_node(next)
+        self.tax.fixup_node(next.0)
     }
 }
 
