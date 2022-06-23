@@ -146,7 +146,7 @@ fn assign_reads(ann_map: &TaxonomyAnnotations, q: Rational) -> (Vec<NodeId>, Rat
 
 /// Produce a metagenomic assignment using the TANGO algorithm.
 #[derive(Args)]
-pub struct AssignArgs {
+pub struct TangoAssignArgs {
     #[clap(long, arg_enum, default_value_t)]
     taxonomy_format: PreprocessedTaxonomyFormat,
 
@@ -409,11 +409,12 @@ fn write_assignments(
     Ok(())
 }
 
-pub fn assign(args: AssignArgs) -> anyhow::Result<()> {
+pub fn tango_assign(args: TangoAssignArgs) -> anyhow::Result<()> {
     let taxonomy = PreprocessedTaxonomy::deserialize_with_format(
         &args.preprocessed_taxonomy,
         args.taxonomy_format,
     )?;
+
     eprintln!("Loaded taxonomy");
 
     let taxonomy = &taxonomy;

@@ -16,18 +16,18 @@ pub mod taxonomy;
 pub(crate) mod filter;
 pub(crate) mod util;
 
-mod assign;
 mod get_lineage;
 mod preprocess_blastout;
 mod preprocess_taxonomy;
 mod refine_vpf_class;
+mod tango_assign;
 
 #[derive(Subcommand)]
 enum Commands {
     PreprocessTaxonomy(preprocess_taxonomy::PreprocessTaxonomyArgs),
     GetLineage(get_lineage::GetLineageArgs),
     PreprocessBlastout(preprocess_blastout::PreprocessBlastOutArgs),
-    Assign(assign::AssignArgs),
+    TangoAssign(tango_assign::TangoAssignArgs),
     RefineVpfClass(refine_vpf_class::RefineVpfClassArgs),
 }
 
@@ -51,8 +51,8 @@ fn main() -> anyhow::Result<()> {
         Commands::PreprocessBlastout(args) => {
             preprocess_blastout::preprocess_blastout(args)?;
         }
-        Commands::Assign(args) => {
-            assign::assign(args)?;
+        Commands::TangoAssign(args) => {
+            tango_assign::tango_assign(args)?;
         }
         Commands::RefineVpfClass(args) => {
             refine_vpf_class::refine_vpf_class(args)?;

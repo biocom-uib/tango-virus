@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    assign::AssignmentRecord,
+    tango_assign::AssignmentRecord,
     filter::{self, FromStrFilter},
     preprocess_taxonomy::{
         with_some_taxonomy, PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy,

@@ -42,8 +42,8 @@ _Note that this step only needs to be run once per taxonomy update._
 ### `preprocess-blastout`
 
 This subcommand loads the output of NCBI's BLAST+ (`blastn`) to produce a
-suitable input file for the `assign` subcommand. Assuming that `blastn` was
-executed using `-outfmt '6 qseqid staxid'` or `-outfmt '7 qseqid staxid'`
+suitable input file for the `tango-assign` subcommand. Assuming that `blastn`
+was executed using `-outfmt '6 qseqid staxid'` or `-outfmt '7 qseqid staxid'`
 and, for instance, `-db nt`:
 
 ```
@@ -56,11 +56,11 @@ meteor preprocess-blastout /path/to/blast/hits.out \
 
 The argument to `--blast-outfmt` should be exactly the same as `blastn`'s
 `-outfmt`, but only supports formats 6 and 7. Columns `staxid` and `ssciname`
-are not included by default but at least one of those is required by `assign`
-(`staxid` is preferred), see `blastn -help` for more information about
-specifying output columns).
+are not included by default but at least one of those is required by
+`tango-assign` (`staxid` is preferred), see `blastn -help` for more information
+about specifying output columns).
 
-### `assign`
+### `tango-assign`
 
 This subcommand assigns hits from `preprocess-blastout` to nodes in the
 taxonomy. This is a reimplementation of
@@ -69,17 +69,18 @@ from the `preprocess-taxonomy` step and the output from `preprocess-blastout`.
 To run it, execute
 
 ```
-meteor assign preprocessed_taxonomy.cbor preprocessed_hits.tsv \
+meteor tango-assign preprocessed_taxonomy.cbor preprocessed_hits.tsv \
     -q 0.5 -o assignment.tsv
 ```
 
 ### `refine-vpf-class`
 
-This step takes as input the results from `assign` and the host prediction
-output from `vpf-class` ([GitHub](https://github.com/biocom-uib/vpf-tools)) and
-refines it to include only ascendants from taxonomic nodes found in the
-`assign` step. If the output is located at `/path/to/vpf-class/output/`, then
-the refinement of the `host_genus` prediction can be done as follows:
+This step takes as input the results from `tango-assign` and the host
+prediction output from `vpf-class`
+([GitHub](https://github.com/biocom-uib/vpf-tools)) and refines it to include
+only ascendants from taxonomic nodes found in the `tango-assign` step. If the
+output is located at `/path/to/vpf-class/output/`, then the refinement of the
+`host_genus` prediction can be done as follows:
 
 ```
 meteor refine-vpf-class preprocessed_taxonomy.cbor assignment.tsv \
