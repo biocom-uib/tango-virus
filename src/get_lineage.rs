@@ -80,11 +80,15 @@ pub fn get_lineage_with_taxonomy(taxo: &impl LabelledTaxonomy) -> anyhow::Result
 }
 
 pub fn get_lineage(args: GetLineageArgs) -> anyhow::Result<()> {
+    let now = std::time::Instant::now();
+
     let taxonomy = PreprocessedTaxonomy::deserialize_with_format(
         &args.preprocessed_taxonomy,
         args.taxonomy_format,
     )
     .context("Unable to deserialize taxonomy")?;
+
+    eprintln!("Loaded taxonomy in {} seconds", now.elapsed().as_secs());
 
     with_some_taxonomy!(&taxonomy.tree, tax => {
         get_lineage_with_taxonomy(tax)

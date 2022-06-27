@@ -20,6 +20,8 @@ it is installed in `~/.cargo/bin`):
 cargo +nightly install --git https://github.com/biocom-uib/meteor
 ```
 
+This can take a while to build, but it is completely automatic.
+
 ## Usage
 
 Meteor has four main subcommands, which are usually run the same order as

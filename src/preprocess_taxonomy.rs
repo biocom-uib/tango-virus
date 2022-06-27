@@ -43,13 +43,16 @@ pub struct PreprocessedTaxonomy {
 
 #[derive(ArgEnum, Debug, Copy, Clone)]
 pub enum PreprocessedTaxonomyFormat {
+    Bincode,
+    #[cfg(feature = "taxonomy-serialize-cbor")]
     Cbor,
+    #[cfg(feature = "taxonomy-serialize-json")]
     Json,
 }
 
 impl Default for PreprocessedTaxonomyFormat {
     fn default() -> Self {
-        Self::Cbor
+        Self::Bincode
     }
 }
 
@@ -87,7 +90,12 @@ impl PreprocessedTaxonomy {
         format: PreprocessedTaxonomyFormat,
     ) -> anyhow::Result<Self> {
         match format {
+            PreprocessedTaxonomyFormat::Bincode => Ok(bincode::deserialize_from(File::open(path)?)?),
+
+            #[cfg(feature ="taxonomy-serialize-cbor")]
             PreprocessedTaxonomyFormat::Cbor => Ok(serde_cbor::from_reader(File::open(path)?)?),
+
+            #[cfg(feature ="taxonomy-serialize-json")]
             PreprocessedTaxonomyFormat::Json => Ok(serde_json::from_reader(File::open(path)?)?),
         }
     }
@@ -98,9 +106,14 @@ impl PreprocessedTaxonomy {
         format: PreprocessedTaxonomyFormat,
     ) -> anyhow::Result<()> {
         match format {
+            PreprocessedTaxonomyFormat::Bincode => {
+                Ok(bincode::serialize_into(File::create(path)?, self)?)
+            }
+            #[cfg(feature ="taxonomy-serialize-cbor")]
             PreprocessedTaxonomyFormat::Cbor => {
                 Ok(serde_cbor::to_writer(File::create(path)?, self)?)
             }
+            #[cfg(feature ="taxonomy-serialize-json")]
             PreprocessedTaxonomyFormat::Json => {
                 Ok(serde_json::to_writer(File::create(path)?, self)?)
             }
