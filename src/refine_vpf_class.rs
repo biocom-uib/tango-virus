@@ -2,11 +2,11 @@ use std::{
     collections::{HashMap, HashSet},
     io, iter,
     num::ParseFloatError,
-    path::Path,
+    path::Path
 };
 
 use anyhow::{Context, Result};
-use clap::{Args, ArgEnum};
+use clap::{Args, ValueEnum};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -14,8 +14,8 @@ use thiserror::Error;
 use crate::{
     tango_assign::AssignmentRecord,
     filter::{self, FromStrFilter},
-    preprocess_taxonomy::{
-        with_some_taxonomy, PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy,
+    preprocessed_taxonomy::{
+        with_some_taxonomy, PreprocessedTaxonomyArgs,
     },
     taxonomy::{LabelledTaxonomy, NodeId, Taxonomy},
     util::writing_new_file_or_stdout,
@@ -25,11 +25,8 @@ use crate::{
 /// metagenomic assignment.
 #[derive(Args)]
 pub struct RefineVpfClassArgs {
-    #[clap(long, arg_enum, default_value_t)]
-    taxonomy_format: PreprocessedTaxonomyFormat,
-
-    /// Path to the preprocessed taxonomy (presumably from preprocess-taxonomy)
-    preprocessed_taxonomy: String,
+    #[clap(flatten)]
+    taxonomy: PreprocessedTaxonomyArgs,
 
     /// TANGO3 metagenomic assignment output
     metagenomic_assignment: String,
@@ -59,13 +56,12 @@ pub struct RefineVpfClassArgs {
     #[clap(long)]
     filter: Vec<String>,
 
-    /// Print a summary of class frequencies and their average membership ratio (incompatible with
-    /// '--output -').
-    #[clap(long)]
-    print_summary: bool,
+    /// Print a summary of class frequencies and their average membership ratio.
+    #[clap(long, value_name = "SUMMARY_FILE")]
+    write_summary: Option<String>,
 
-    /// Column to sort --print-summary by
-    #[clap(long, arg_enum, default_value_t = SummarySortBy::VirusCount)]
+    /// Column to sort --write-summary by
+    #[clap(long, value_enum, default_value_t = SummarySortBy::VirusCount)]
     summary_sort_by: SummarySortBy,
 }
 
@@ -372,7 +368,7 @@ impl<'a> ClassStats<'a> {
     }
 }
 
-#[derive(ArgEnum, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum SummarySortBy {
     ClassName,
     VirusCount,
@@ -458,9 +454,9 @@ where
 }
 
 pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
-    if args.print_summary && args.output == "-" {
+    if args.write_summary.as_deref() == Some("-") && args.output == "-" {
         anyhow::bail!(
-            "--output - is incompatible with --print-summary. Use --output /path/to/file instead."
+            "Both --output and --write-summary can't be stdout."
         );
     }
 
@@ -474,10 +470,7 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
         )
     })?;
 
-    let taxonomy = PreprocessedTaxonomy::deserialize_with_format(
-        &args.preprocessed_taxonomy,
-        args.taxonomy_format,
-    )?;
+    let taxonomy = args.taxonomy.deserialize()?;
 
     with_some_taxonomy!(&taxonomy.tree, tax => {
         let rank_sym = tax
@@ -508,21 +501,30 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
                 .filter(|record| filters.iter().all(|f| f.apply(record)))
                 .filter_map(|record| enrich_vpf_class_record(tax, rank_sym, &rank_assignments, args.allow_different_ranks, record));
 
-            if args.print_summary {
+            if let Some(summary_file) = &args.write_summary {
                 let mut summary = EnrichmentSummary::default();
 
                 let refinement = refinement.inspect(|record| summary.account(record));
 
                 writing_new_file_or_stdout!(&args.output, writer => {
+                    let writer = writer.context("Error creating output file")?;
+
                     write_refined_output(writer, refinement)
                         .context("Error writing refined output")?;
                 });
 
-                summary.write(io::stdout(), args.summary_sort_by)
-                    .context("Error writing summary")?;
+                writing_new_file_or_stdout!(summary_file, writer => {
+                    let writer = writer.context("Error creating summary file")?;
+
+                    summary.write(writer, args.summary_sort_by)
+                        .context("Error writing summary")?;
+                });
+
 
             } else {
                 writing_new_file_or_stdout!(&args.output, writer => {
+                    let writer = writer.context("Error creating output file")?;
+
                     write_refined_output(writer, refinement)
                         .context("Error writing refined output")?;
                 });

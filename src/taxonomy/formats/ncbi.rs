@@ -25,6 +25,8 @@ pub mod names;
 
 pub type TaxId = NodeId;
 
+const FORMAT_VERSION: u32 = GenericTaxonomy::FORMAT_VERSION;
+
 #[derive(Deserialize, Serialize)]
 pub struct NcbiTaxonomy<Names> {
     pub(crate) tree: GenericTaxonomy,
@@ -93,6 +95,8 @@ impl<Names> NcbiTaxonomy<Names> {
 }
 
 impl NcbiTaxonomy<NoNames> {
+    pub const FORMAT_VERSION: u32 = FORMAT_VERSION + NoNames::FORMAT_VERSION;
+
     pub fn load_nodes<P: AsRef<Path>>(nodes_dmp: P) -> Result<Self, DmpError> {
         let mut builder = GenericTaxonomy::builder();
 
@@ -130,6 +134,14 @@ impl NcbiTaxonomy<NoNames> {
             names: NoNames::new(),
         })
     }
+}
+
+impl NcbiTaxonomy<SingleClassNames> {
+    pub const FORMAT_VERSION: u32 = FORMAT_VERSION + SingleClassNames::FORMAT_VERSION;
+}
+
+impl NcbiTaxonomy<AllNames> {
+    pub const FORMAT_VERSION: u32 = FORMAT_VERSION + AllNames::FORMAT_VERSION;
 }
 
 impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {

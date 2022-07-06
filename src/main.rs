@@ -12,6 +12,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod taxonomy;
+pub(crate) mod preprocessed_taxonomy;
 
 pub(crate) mod filter;
 pub(crate) mod util;

@@ -4,18 +4,17 @@ use anyhow::Context;
 use clap::Args;
 use itertools::Itertools;
 
-use crate::{preprocess_taxonomy::{PreprocessedTaxonomyFormat, with_some_taxonomy, SomeTaxonomy, PreprocessedTaxonomy}, taxonomy::LabelledTaxonomy};
-
+use crate::{
+    preprocessed_taxonomy::{with_some_taxonomy, PreprocessedTaxonomyArgs},
+    taxonomy::LabelledTaxonomy,
+};
 
 /// Obtain lineage information from a list of taxids. The input is provided as a taxid per line on
 /// STDIN.
 #[derive(Args)]
 pub struct GetLineageArgs {
-    #[clap(long, arg_enum, default_value_t)]
-    taxonomy_format: PreprocessedTaxonomyFormat,
-
-    /// Path to the preprocessed taxonomy (from preprocess-taxonomy)
-    preprocessed_taxonomy: String,
+    #[clap(flatten)]
+    taxonomy: PreprocessedTaxonomyArgs,
 }
 
 pub fn get_lineage_with_taxonomy(taxo: &impl LabelledTaxonomy) -> anyhow::Result<()> {
@@ -82,11 +81,7 @@ pub fn get_lineage_with_taxonomy(taxo: &impl LabelledTaxonomy) -> anyhow::Result
 pub fn get_lineage(args: GetLineageArgs) -> anyhow::Result<()> {
     let now = std::time::Instant::now();
 
-    let taxonomy = PreprocessedTaxonomy::deserialize_with_format(
-        &args.preprocessed_taxonomy,
-        args.taxonomy_format,
-    )
-    .context("Unable to deserialize taxonomy")?;
+    let taxonomy = args.taxonomy.deserialize()?;
 
     eprintln!("Loaded taxonomy in {} seconds", now.elapsed().as_secs());
 

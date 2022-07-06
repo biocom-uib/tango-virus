@@ -33,6 +33,8 @@ pub struct AllNames {
 }
 
 impl AllNames {
+    pub const FORMAT_VERSION: u32 = 1;
+
     pub fn load_filtered_names_dmp<S, P>(classes: &[S], names_dmp: P) -> Result<Self, DmpError>
     where
         S: AsRef<str>,
@@ -117,6 +119,8 @@ pub struct SingleClassNames {
 }
 
 impl SingleClassNames {
+    pub const FORMAT_VERSION: u32 = 1;
+
     pub fn load_names_dmp<P: AsRef<Path>>(
         name_class: String,
         names_dmp: P,
@@ -136,6 +140,8 @@ impl SingleClassNames {
 pub struct NoNames {}
 
 impl NoNames {
+    pub const FORMAT_VERSION: u32 = 1;
+
     pub fn new() -> Self {
         NoNames {}
     }

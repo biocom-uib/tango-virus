@@ -3,14 +3,14 @@ use std::str::ParseBoolError;
 use std::sync::Arc;
 
 use anyhow::Context;
-use clap::{ArgEnum, Args};
+use clap::{Args, ValueEnum};
 use itertools::Itertools;
 
 use polars::datatypes::DataType;
 use polars::lazy::prelude::LazyCsvReader;
 use polars::prelude::{
-    col, CsvWriter, DistinctKeepStrategy, Expr, GetOutput, IntoSeries, LazyFrame, LiteralValue,
-    NullValues, Schema,
+    col, CsvWriter, UniqueKeepStrategy, Expr, GetOutput, IntoSeries, LazyFrame, LiteralValue,
+    NullValues, Schema, ListNameSpaceImpl,
 };
 use polars_io::SerWriter;
 use thiserror::Error;
@@ -135,7 +135,7 @@ pub mod fields {
     ];
 }
 
-#[derive(ArgEnum, Debug, Copy, Clone)]
+#[derive(ValueEnum, Debug, Copy, Clone)]
 pub enum WeightColAgg {
     Max,
     Mean,
@@ -193,7 +193,7 @@ pub struct PreprocessBlastOutArgs {
 
     /// Aggregation function to apply to the selected weight column (if needed). [requires
     /// --weight-col]
-    #[clap(long, arg_enum, requires = "weight-col")]
+    #[clap(long, value_enum, requires = "weight-col")]
     weight_col_agg: Option<WeightColAgg>,
 
     /// Filters to apply before processing. Example: --filter 'evalue<=1e-3'
@@ -396,7 +396,7 @@ fn group_blast_hits(hits: LazyFrame, query_id_col: &str, subject_id_col: &str) -
             .and(col(subject_id_col).is_not_null()),
     )
     .select([col(query_id_col), col(subject_id_col).cast(DataType::Utf8)])
-    .distinct(None, DistinctKeepStrategy::First)
+    .unique(None, UniqueKeepStrategy::First)
     .groupby([col(query_id_col)])
     .agg([col(subject_id_col).list()])
 }
@@ -489,6 +489,8 @@ pub fn preprocess_blastout(args: PreprocessBlastOutArgs) -> anyhow::Result<()> {
     }
 
     writing_new_file_or_stdout!(&args.output, writer => {
+        let writer = writer.context("Error creating grouped hits file")?;
+
         CsvWriter::new(writer)
             .with_delimiter(b'\t')
             .finish(&mut grouped)?;

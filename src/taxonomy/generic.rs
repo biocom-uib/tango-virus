@@ -37,6 +37,8 @@ pub struct GenericTaxonomy {
 }
 
 impl GenericTaxonomy {
+    pub const FORMAT_VERSION: u32 = 0;
+
     pub fn builder() -> GenericTaxonomyBuilder {
         GenericTaxonomyBuilder::default()
     }

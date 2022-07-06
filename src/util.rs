@@ -3,10 +3,10 @@ macro_rules! writing_new_file_or_stdout {
         let path = $path;
 
         if path == "-" {
-            let $writer = std::io::stdout();
+            let $writer = Ok::<_, std::io::Error>(std::io::stdout());
             $body
         } else {
-            let $writer = std::fs::File::create(path)?;
+            let $writer = std::fs::File::create(path);
             $body
         }
     }};

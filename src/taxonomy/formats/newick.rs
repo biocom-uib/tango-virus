@@ -43,6 +43,8 @@ pub enum NewickLoadError {
 }
 
 impl NewickTaxonomy {
+    pub const FORMAT_VERSION: u32 = 0;
+
     pub fn from_simple_tree(value: SimpleTree, ranks: Vec<String>) -> Self {
         let rank_storage = ranks;
 

@@ -1,22 +1,21 @@
-use std::{
-    fs::File,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Context};
-use clap::{ArgEnum, Args};
+use clap::{Args, ValueEnum};
 use itertools::Itertools;
-use serde::{Deserialize, Serialize};
 
-use crate::taxonomy::{
-    formats::{
-        ncbi::{self, AllNames, NamesAssoc, NcbiTaxonomy},
-        newick::NewickTaxonomy,
+use crate::{
+    preprocessed_taxonomy::{PreprocessedTaxonomy, PreprocessedTaxonomyFormat, SomeTaxonomy},
+    taxonomy::{
+        formats::{
+            ncbi::{AllNames, NamesAssoc, NcbiTaxonomy},
+            newick::NewickTaxonomy,
+        },
+        Taxonomy, TaxonomyMut,
     },
-    Taxonomy, TaxonomyMut,
 };
 
-#[derive(ArgEnum, Debug, Copy, Clone)]
+#[derive(ValueEnum, Debug, Copy, Clone)]
 pub enum TaxonomyFormat {
     Ncbi,
     Newick,
@@ -28,99 +27,6 @@ impl Default for TaxonomyFormat {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-pub enum SomeTaxonomy {
-    NcbiTaxonomyWithSingleClassNames(NcbiTaxonomy<ncbi::SingleClassNames>),
-    NcbiTaxonomyWithManyNames(NcbiTaxonomy<ncbi::AllNames>),
-    NewickTaxonomy(NewickTaxonomy),
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct PreprocessedTaxonomy {
-    pub tree: SomeTaxonomy,
-    pub ordered_ranks: Option<Vec<String>>,
-}
-
-#[derive(ArgEnum, Debug, Copy, Clone)]
-pub enum PreprocessedTaxonomyFormat {
-    Bincode,
-    #[cfg(feature = "taxonomy-serialize-cbor")]
-    Cbor,
-    #[cfg(feature = "taxonomy-serialize-json")]
-    Json,
-}
-
-impl Default for PreprocessedTaxonomyFormat {
-    fn default() -> Self {
-        Self::Bincode
-    }
-}
-
-macro_rules! with_some_taxonomy {
-    ($some_taxonomy:expr, $tax:pat => $body:expr $(,)?) => {
-        match $some_taxonomy {
-            SomeTaxonomy::NcbiTaxonomyWithSingleClassNames($tax) => $body,
-            SomeTaxonomy::NcbiTaxonomyWithManyNames($tax) => $body,
-            SomeTaxonomy::NewickTaxonomy($tax) => $body,
-        }
-    };
-}
-
-macro_rules! with_some_ncbi_or_newick_taxonomy {
-    (
-        $some_taxonomy:expr,
-        ncbi: $ncbi_tax:pat => $ncbi_body:expr,
-        newick: $newick_tax:pat => $newick_body:expr
-        $(,)?
-    ) => {
-        match $some_taxonomy {
-            SomeTaxonomy::NcbiTaxonomyWithSingleClassNames($ncbi_tax) => $ncbi_body,
-            SomeTaxonomy::NcbiTaxonomyWithManyNames($ncbi_tax) => $ncbi_body,
-            SomeTaxonomy::NewickTaxonomy($newick_tax) => $newick_body,
-        }
-    };
-}
-
-pub(crate) use with_some_ncbi_or_newick_taxonomy;
-pub(crate) use with_some_taxonomy;
-
-impl PreprocessedTaxonomy {
-    pub fn deserialize_with_format<P: AsRef<Path>>(
-        path: P,
-        format: PreprocessedTaxonomyFormat,
-    ) -> anyhow::Result<Self> {
-        match format {
-            PreprocessedTaxonomyFormat::Bincode => Ok(bincode::deserialize_from(File::open(path)?)?),
-
-            #[cfg(feature ="taxonomy-serialize-cbor")]
-            PreprocessedTaxonomyFormat::Cbor => Ok(serde_cbor::from_reader(File::open(path)?)?),
-
-            #[cfg(feature ="taxonomy-serialize-json")]
-            PreprocessedTaxonomyFormat::Json => Ok(serde_json::from_reader(File::open(path)?)?),
-        }
-    }
-
-    pub fn serialize_with_format<P: AsRef<Path>>(
-        &self,
-        path: P,
-        format: PreprocessedTaxonomyFormat,
-    ) -> anyhow::Result<()> {
-        match format {
-            PreprocessedTaxonomyFormat::Bincode => {
-                Ok(bincode::serialize_into(File::create(path)?, self)?)
-            }
-            #[cfg(feature ="taxonomy-serialize-cbor")]
-            PreprocessedTaxonomyFormat::Cbor => {
-                Ok(serde_cbor::to_writer(File::create(path)?, self)?)
-            }
-            #[cfg(feature ="taxonomy-serialize-json")]
-            PreprocessedTaxonomyFormat::Json => {
-                Ok(serde_json::to_writer(File::create(path)?, self)?)
-            }
-        }
-    }
-}
-
 /// Load, preprocess and serialize a taxonomy for further Meteor usage.
 #[derive(Args)]
 pub struct PreprocessTaxonomyArgs {
@@ -129,7 +35,7 @@ pub struct PreprocessTaxonomyArgs {
     contract: Option<Option<String>>,
 
     /// Input taxonomy format
-    #[clap(long, arg_enum, default_value_t)]
+    #[clap(long, value_enum, default_value_t)]
     input_format: TaxonomyFormat,
 
     /// Path to the input taxonomy (in the case of NCBI, specify the extracted directory of taxdump)
@@ -144,8 +50,8 @@ pub struct PreprocessTaxonomyArgs {
     #[clap(long)]
     newick_ranks: Option<String>,
 
-    /// Output taxonomy format
-    #[clap(long, arg_enum, default_value_t)]
+    /// Format in which the preprocessed taxonomy should be serialized.
+    #[clap(long, value_enum, default_value_t)]
     output_format: PreprocessedTaxonomyFormat,
 
     /// Output taxonomy path
@@ -294,8 +200,8 @@ fn preprocess_ncbi(args: &PreprocessNcbiTaxonomyArgs) -> anyhow::Result<Preproce
 
     let ordered_ranks = contract_and_order_ranks(args, &mut tax)?;
 
-    Ok(PreprocessedTaxonomy {
-        tree: if args.name_classes.len() == 1 {
+    Ok(PreprocessedTaxonomy::new(
+        if args.name_classes.len() == 1 {
             match std::mem::take(&mut tax.names).only_of_class(&args.name_classes[0]) {
                 Ok(names) => SomeTaxonomy::NcbiTaxonomyWithSingleClassNames(tax.with_names(names)),
                 Err(names) => SomeTaxonomy::NcbiTaxonomyWithManyNames(tax.with_names(names)),
@@ -304,7 +210,7 @@ fn preprocess_ncbi(args: &PreprocessNcbiTaxonomyArgs) -> anyhow::Result<Preproce
             SomeTaxonomy::NcbiTaxonomyWithManyNames(tax)
         },
         ordered_ranks,
-    })
+    ))
 }
 
 fn preprocess_newick(args: &PreprocessNewickTaxonomyArgs) -> anyhow::Result<PreprocessedTaxonomy> {
@@ -314,10 +220,10 @@ fn preprocess_newick(args: &PreprocessNewickTaxonomyArgs) -> anyhow::Result<Prep
         anyhow::bail!("Contraction is not supported for Newick taxonomies");
     }
 
-    Ok(PreprocessedTaxonomy {
-        tree: SomeTaxonomy::NewickTaxonomy(tax),
-        ordered_ranks: Some(args.ranks.clone()),
-    })
+    Ok(PreprocessedTaxonomy::new(
+        SomeTaxonomy::NewickTaxonomy(tax),
+        Some(args.ranks.clone()),
+    ))
 }
 
 pub fn preprocess_taxonomy(args: PreprocessTaxonomyArgs) -> anyhow::Result<()> {

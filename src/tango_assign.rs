@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 
+use anyhow::Context;
 use clap::Args;
 use crossbeam::channel::{Receiver, Sender};
 use csv::{StringRecord, WriterBuilder};
@@ -10,9 +11,9 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
 use crate::preprocess_blastout;
-use crate::preprocess_taxonomy::{
+use crate::preprocessed_taxonomy::{
     with_some_ncbi_or_newick_taxonomy, with_some_taxonomy, PreprocessedTaxonomy,
-    PreprocessedTaxonomyFormat, SomeTaxonomy,
+    PreprocessedTaxonomyArgs, SomeTaxonomy,
 };
 use crate::taxonomy::formats::ncbi::{NamesAssoc, NcbiTaxonomy};
 use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
@@ -147,11 +148,8 @@ fn assign_reads(ann_map: &TaxonomyAnnotations, q: Rational) -> (Vec<NodeId>, Rat
 /// Produce a metagenomic assignment using the TANGO algorithm.
 #[derive(Args)]
 pub struct TangoAssignArgs {
-    #[clap(long, arg_enum, default_value_t)]
-    taxonomy_format: PreprocessedTaxonomyFormat,
-
-    /// Path to the preprocessed taxonomy (presumably from preprocess-taxonomy)
-    preprocessed_taxonomy: String,
+    #[clap(flatten)]
+    taxonomy: PreprocessedTaxonomyArgs,
 
     /// Path to the preprocessed reads file (presumably from preprocess-blastout). It should be a
     /// file containing the parsed output of a mapping program, in the (tab-separated) format
@@ -367,6 +365,8 @@ fn write_assignments(
 ) -> anyhow::Result<()> {
     with_some_taxonomy!(&taxonomy.tree, tax => {
         writing_new_file_or_stdout!(output, writer => {
+            let writer = writer.context("Error creating assignments file")?;
+
             let mut csv_writer = WriterBuilder::new()
                 .delimiter(b'\t')
                 .has_headers(true)
@@ -410,10 +410,7 @@ fn write_assignments(
 }
 
 pub fn tango_assign(args: TangoAssignArgs) -> anyhow::Result<()> {
-    let taxonomy = PreprocessedTaxonomy::deserialize_with_format(
-        &args.preprocessed_taxonomy,
-        args.taxonomy_format,
-    )?;
+    let taxonomy = args.taxonomy.deserialize()?;
 
     eprintln!("Loaded taxonomy");
 
