@@ -9,10 +9,9 @@ use itertools::Itertools;
 use polars::datatypes::DataType;
 use polars::lazy::prelude::LazyCsvReader;
 use polars::prelude::{
-    col, CsvWriter, UniqueKeepStrategy, Expr, GetOutput, IntoSeries, LazyFrame, LiteralValue,
-    NullValues, Schema, ListNameSpaceImpl,
+    col, CsvWriter, Expr, GetOutput, IntoSeries, LazyFrame, ListNameSpaceImpl, LiteralValue,
+    NullValues, Schema, SerWriter, UniqueKeepStrategy,
 };
-use polars_io::SerWriter;
 use thiserror::Error;
 
 use crate::filter::{FromStrFilter, Op};
@@ -373,7 +372,7 @@ fn load_blastout(
         .with_delimiter(delim)
         .with_comment_char(comment_char)
         .with_schema(Arc::new(schema))
-        .with_null_values(Some(NullValues::AllColumns("N/A".to_owned())))
+        .with_null_values(Some(NullValues::AllColumnsSingle("N/A".to_owned())))
         .finish()?;
 
     let wanted_columns = wanted_columns.unwrap_or_else(|| {
