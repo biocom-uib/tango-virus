@@ -19,7 +19,7 @@ use crate::filter::{FromStrFilter, Op};
 use crate::util::writing_new_file_or_stdout;
 
 pub mod fields {
-    use std::{collections::HashMap, lazy::SyncLazy};
+    use std::{collections::HashMap, sync::LazyLock};
 
     use polars::datatypes::DataType;
 
@@ -74,7 +74,7 @@ pub mod fields {
     pub const QCOVHSP: (&str, DataType) = ("qcovhsp", DataType::Float32);
     pub const QCOVUS: (&str, DataType) = ("qcovus", DataType::Float32);
 
-    pub static FIELD_TYPES: SyncLazy<HashMap<&'static str, DataType>> = SyncLazy::new(|| {
+    pub static FIELD_TYPES: LazyLock<HashMap<&'static str, DataType>> = LazyLock::new(|| {
         HashMap::from([
             QSEQID,
             QGI,

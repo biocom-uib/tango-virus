@@ -1,9 +1,7 @@
 #![feature(
     associated_type_defaults,
-    generic_associated_types,
     hash_raw_entry,
     hash_set_entry,
-    io_read_to_string,
     iterator_try_reduce,
     once_cell,
     never_type

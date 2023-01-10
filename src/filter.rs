@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::error::Error;
 use std::fmt::Debug;
-use std::lazy::SyncLazy;
+use std::sync::LazyLock;
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -77,8 +77,8 @@ pub trait FromStrFilter: Sized {
     fn parse_filter(filter_str: &str) -> Result<Self, FilterParseError<Self>> {
         use FilterParseError::*;
 
-        static RE: SyncLazy<Regex> =
-            SyncLazy::new(|| Regex::new(r"^(\w+)\s*([><]?=?)\s*(\S+)$").unwrap());
+        static RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"^(\w+)\s*([><]?=?)\s*(\S+)$").unwrap());
 
         let cap = RE
             .captures(filter_str)
