@@ -140,9 +140,15 @@ pub enum WeightColAgg {
     Mean,
     Median,
     Min,
-    NumUnique,
+    Count,
     Product,
     Sum,
+}
+
+impl Default for WeightColAgg {
+    fn default() -> Self {
+        WeightColAgg::Count
+    }
 }
 
 impl WeightColAgg {
@@ -154,7 +160,7 @@ impl WeightColAgg {
             Mean => Expr::mean,
             Median => Expr::median,
             Min => Expr::min,
-            NumUnique => Expr::n_unique,
+            Count => Expr::count,
             Product => Expr::product,
             Sum => Expr::sum,
         }
@@ -190,10 +196,9 @@ pub struct PreprocessBlastOutArgs {
     #[clap(long)]
     weight_col: Option<String>,
 
-    /// Aggregation function to apply to the selected weight column (if needed). [requires
-    /// --weight-col]
-    #[clap(long, value_enum, requires = "weight_col")]
-    weight_col_agg: Option<WeightColAgg>,
+    /// Aggregation function to apply to the selected weight column (if needed).
+    #[clap(long, value_enum, default_value_t)]
+    weight_col_agg: WeightColAgg,
 
     /// Filters to apply before processing. Example: --filter 'evalue<=1e-3'
     #[clap(long)]
