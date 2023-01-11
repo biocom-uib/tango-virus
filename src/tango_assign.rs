@@ -3,7 +3,7 @@ use std::io;
 
 use anyhow::Context;
 use clap::Args;
-use crossbeam::channel::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 use csv::{StringRecord, WriterBuilder};
 use extended_rational::Rational;
 use itertools::Itertools;
@@ -218,7 +218,7 @@ where
     Tax: LabelledTaxonomy + Sync,
     F: Fn(&str) -> Vec<NodeId> + Sync,
 {
-    csv_reader.records().enumerate().par_bridge().try_for_each(|(record_id, record)| {
+    csv_reader.records().enumerate().par_bridge().try_for_each_with(sender, |sender_copy, (record_id, record)| {
         let record = record?;
         assert!(record.len() == 2);
 
@@ -266,7 +266,7 @@ where
             annotate_precision_recall(&mut ann_map, lca_id);
             let (assigned_nodes, penalty) = assign_reads(&ann_map, q);
 
-            sender.send(QueryAssignments {
+            sender_copy.send(QueryAssignments {
                 query_id: query_id.to_owned(),
                 assigned_nodes,
                 penalty: f32::from(penalty),
@@ -417,7 +417,7 @@ pub fn tango_assign(args: TangoAssignArgs) -> anyhow::Result<()> {
     let taxonomy = &taxonomy;
     let q = Rational::from(args.q);
 
-    let (sender, receiver) = crossbeam::channel::unbounded();
+    let (sender, receiver) = std::sync::mpsc::channel(); // unbounded channel
 
     let (rl, rr) = rayon::join(
         move || load_reads_and_produce_assignments(&args.preprocessed_reads, taxonomy, q, sender),
