@@ -192,7 +192,7 @@ pub struct PreprocessBlastOutArgs {
 
     /// Aggregation function to apply to the selected weight column (if needed). [requires
     /// --weight-col]
-    #[clap(long, value_enum, requires = "weight-col")]
+    #[clap(long, value_enum, requires = "weight_col")]
     weight_col_agg: Option<WeightColAgg>,
 
     /// Filters to apply before processing. Example: --filter 'evalue<=1e-3'
