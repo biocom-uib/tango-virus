@@ -279,6 +279,8 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
         anyhow::bail!("makeblastdb executable not found, please make sure that BLAST+ is installed");
     }
 
+    println!("Preparing makeblastdb input files from UniProt divisions");
+
     prepare_files_for_makeblastdb(&args)
         .context("Preparing files for makeblastdb")?;
 
@@ -294,6 +296,8 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
 
     let fasta_path = fasta_path.to_str().ok_or(anyhow!("FASTA path contains invalid unicode"))?;
     let taxid_map_path = taxid_map_path.to_str().ok_or(anyhow!("TAXID mapping path contains invalid unicode"))?;
+
+    println!("Running makeblastdb");
 
     let makeblastdb_status = process::Command::new("makeblastdb")
         .arg("-parse_seqids")
