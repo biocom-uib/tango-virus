@@ -37,7 +37,7 @@ pub struct PrepareUniProtBlastDBArgs {
 }
 
 
-const FTP_SERVER: &str = "ftp.uniprot.org";
+const FTP_SERVER: &str = "ftp.uniprot.org:21";
 const REMOTE_DIVISIONS_DIRECTORY: &str = "/pub/databases/uniprot/current_release/knowledgebase/taxonomic_divisions";
 const SWISSPROT_FILE_NAME_PART: &str = "sprot";
 const TREMBL_FILE_NAME_PART: &str = "trembl";
@@ -80,6 +80,9 @@ fn fetch(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<Vec<PathBuf>> {
 
         if !args.skip_swissprot {
             dbs.push(SWISSPROT_FILE_NAME_PART);
+        }
+
+        if !args.skip_trembl {
             dbs.push(TREMBL_FILE_NAME_PART);
         }
 
@@ -102,14 +105,14 @@ fn fetch(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<Vec<PathBuf>> {
                     ftp_conn.insert(ftp_connect()?)
                 };
 
+                println!("Downloading {file_name:?} to {file_path:?}");
+
                 conn.retr(&file_name, |reader| {
                     let r =
                         File::create(&file_path).and_then(|mut file| io::copy(reader, &mut file));
 
                     Ok(r)
                 })??;
-
-                println!("Downloaded {file_name:?} to {file_path:?}");
 
                 paths.push(file_path);
             }
