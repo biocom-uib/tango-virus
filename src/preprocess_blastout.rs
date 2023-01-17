@@ -7,9 +7,9 @@ use clap::{Args, ValueEnum};
 use itertools::Itertools;
 
 use polars::datatypes::DataType;
-use polars::lazy::prelude::LazyCsvReader;
+use polars::lazy::prelude::{Expr, LazyCsvReader};
 use polars::prelude::{
-    col, CsvWriter, Expr, GetOutput, IntoSeries, LazyFrame, ListNameSpaceImpl, LiteralValue,
+    col, CsvWriter, GetOutput, IntoSeries, LazyFrame, ListNameSpaceImpl, LiteralValue,
     NullValues, Schema, SerWriter, UniqueKeepStrategy,
 };
 use thiserror::Error;

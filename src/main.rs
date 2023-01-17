@@ -3,8 +3,9 @@
     hash_raw_entry,
     hash_set_entry,
     iterator_try_reduce,
+    never_type,
     once_cell,
-    never_type
+    result_flattening,
 )]
 
 use clap::{Parser, Subcommand};
@@ -16,6 +17,7 @@ pub(crate) mod filter;
 pub(crate) mod util;
 
 mod crispr;
+mod ppin;
 mod get_lineage;
 mod preprocess_blastout;
 mod preprocess_taxonomy;
@@ -29,6 +31,7 @@ enum Commands {
     PreprocessBlastout(preprocess_blastout::PreprocessBlastOutArgs),
     TangoAssign(tango_assign::TangoAssignArgs),
     RefineVpfClass(refine_vpf_class::RefineVpfClassArgs),
+    PrepareUniprotBlastdb(ppin::prepare_uniprot_blastdb::PrepareUniProtBlastDBArgs),
 }
 
 /// METEOR: Metagenome and Metavirome Joint Analysis
@@ -56,6 +59,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::RefineVpfClass(args) => {
             refine_vpf_class::refine_vpf_class(args)?;
+        }
+        Commands::PrepareUniprotBlastdb(args) => {
+            ppin::prepare_uniprot_blastdb::prepare_uniprot_blastdb(args)?;
         }
     }
 
