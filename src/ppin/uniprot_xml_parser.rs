@@ -1,47 +1,129 @@
-use std::{io::BufRead, marker::PhantomData, borrow::Cow};
+use std::{io::BufRead, marker::PhantomData};
 
-use quick_xml::{Reader, events::{Event, BytesStart, BytesEnd}, reader::Span};
+use quick_xml::{Reader, events::{Event, BytesStart}};
 
 
 type XmlResult<T> = quick_xml::Result<T>;
 
+pub enum SubfieldsAction {
+    Skip,
+    Populate,
+}
+
+#[allow(unused_variables)]
 pub trait EntryBuilder: Default {
     type Entry;
 
     // accession
-    fn accession(&mut self, acc: &str);
+    fn accession(&mut self, acc: &str) {}
 
     // name
-    fn name(&mut self, name: &str);
+    fn name(&mut self, name: &str) {}
 
     // sequence
-    fn sequence(&mut self, sequence: &str);
+    fn sequence(&mut self, sequence: &str) {}
 
     // dbreference
-    fn begin_dbreference(&mut self, ref_type: &str, ref_id: &str);
-    fn dbreference_property(&mut self, prop_type: &str, prop_value: &str);
-    fn finish_dbreference(&mut self);
+    #[must_use]
+    fn begin_dbreference(&mut self, ref_type: &str, ref_id: &str) -> SubfieldsAction {
+        SubfieldsAction::Skip
+    }
+
+    fn dbreference_property(&mut self, prop_type: &str, prop_value: &str) {}
+    fn finish_dbreference(&mut self) {}
 
     // organism
-    fn begin_organism(&mut self);
+    #[must_use]
+    fn begin_organism(&mut self) -> SubfieldsAction {
+        SubfieldsAction::Skip
+    }
 
-    fn organism_scientific_name(&mut self, name: &str);
-    fn organism_common_name(&mut self, name: &str);
+    fn organism_scientific_name(&mut self, name: &str) {}
+    fn organism_common_name(&mut self, name: &str) {}
 
     //  organism/dbReference
-    fn begin_organism_dbreference(&mut self, ref_type: &str, ref_id: &str);
-    fn organism_dbreference_property(&mut self, prop_type: &str, prop_value: &str);
-    fn finish_organism_dbreference(&mut self);
+    #[must_use]
+    fn begin_organism_dbreference(&mut self, ref_type: &str, ref_id: &str) -> SubfieldsAction {
+        SubfieldsAction::Skip
+    }
+    fn organism_dbreference_property(&mut self, prop_type: &str, prop_value: &str) {}
+    fn finish_organism_dbreference(&mut self) {}
 
-    fn finish_organism(&mut self);
+    fn finish_organism(&mut self) {}
 
     // finish building
     fn finish(self) -> Option<Self::Entry>;
 }
 
+#[derive(Default)]
+pub struct IdentityBuilder<EB>(EB);
+
+impl<EB: EntryBuilder> EntryBuilder for IdentityBuilder<EB> {
+    type Entry = EB;
+
+    fn accession(&mut self, acc: &str) {
+        self.0.accession(acc)
+    }
+
+    fn name(&mut self, name: &str) {
+        self.0.name(name)
+    }
+
+    fn sequence(&mut self, sequence: &str) {
+        self.0.sequence(sequence)
+    }
+
+    fn begin_dbreference(&mut self, ref_type: &str, ref_id: &str) -> SubfieldsAction {
+        self.0.begin_dbreference(ref_type, ref_id)
+    }
+
+    fn dbreference_property(&mut self, prop_type: &str, prop_value: &str) {
+        self.0.dbreference_property(prop_type, prop_value)
+    }
+
+    fn finish_dbreference(&mut self) {
+        self.0.finish_dbreference()
+    }
+
+    fn begin_organism(&mut self) -> SubfieldsAction {
+        self.0.begin_organism()
+    }
+
+    fn organism_scientific_name(&mut self, name: &str) {
+        self.0.organism_scientific_name(name)
+    }
+
+    fn organism_common_name(&mut self, name: &str) {
+        self.0.organism_common_name(name)
+    }
+
+    fn begin_organism_dbreference(&mut self, ref_type: &str, ref_id: &str) -> SubfieldsAction {
+        self.0.begin_organism_dbreference(ref_type, ref_id)
+    }
+
+    fn organism_dbreference_property(&mut self, prop_type: &str, prop_value: &str) {
+        self.0.organism_dbreference_property(prop_type, prop_value)
+    }
+
+    fn finish_organism_dbreference(&mut self) {
+        self.0.finish_organism_dbreference()
+    }
+
+    fn finish_organism(&mut self) {
+        self.0.finish_organism()
+    }
+
+    // finish building
+    fn finish(self) -> Option<Self::Entry> {
+        Some(self.0)
+    }
+}
+
+
 pub struct UniProtXmlReader<R: BufRead> {
     xml_reader: Reader<R>,
     buffer: Vec<u8>,
+    skip_to_end_buffer: Vec<u8>,
 }
 
 pub mod dbref_types {
@@ -64,6 +146,7 @@ mod attrs {
 #[allow(dead_code)]
 mod tags {
     pub const ACCESSION: &str   = "accession";
+    pub const COPYRIGHT: &str   = "copyright";
     pub const COMMON: &str      = "common";
     pub const DBREFERENCE: &str = "dbReference";
     pub const ENTRY: &str       = "entry";
@@ -76,6 +159,7 @@ mod tags {
 
     pub mod u8 {
         pub const ACCESSION: &[u8]   = super::ACCESSION.as_bytes();
+        pub const COPYRIGHT: &[u8]   = super::COPYRIGHT.as_bytes();
         pub const COMMON: &[u8]      = super::COMMON.as_bytes();
         pub const DBREFERENCE: &[u8] = super::DBREFERENCE.as_bytes();
         pub const ENTRY: &[u8]       = super::ENTRY.as_bytes();
@@ -88,29 +172,46 @@ mod tags {
     }
 }
 
+macro_rules! set_from_read_text {
+    ($self:ident, $builder:ident, $tag:ident, $setter:ident) => {{
+        $self.read_text(tags::u8::$tag, |text| {
+            $builder.$setter(text);
+            Ok(())
+        })?;
+    }}
+}
+
+macro_rules! expect_end_of {
+    ($start:ident, $end:ident) => {{
+        assert!(tags::u8::$start == $end.name().as_ref());
+    }}
+}
+
+macro_rules! skip_to_end {
+    ($self:ident, $start:ident) => {{
+        $self.xml_reader.read_to_end_into($start.to_end().name(), &mut $self.skip_to_end_buffer)?;
+        $self.skip_to_end_buffer.clear();
+    }}
+}
+
 macro_rules! read_dbreference {
-    ($self:ident, $builder:ident, $e:expr, $begin:ident, $add_prop:ident, $finish:ident) => {{
-        UniProtXmlReader::begin_read_dbreference(&$self.xml_reader, $e, |ref_type, ref_id| {
+    ($self:ident, $builder:ident, $start:ident, $begin:ident, $add_prop:ident, $finish:ident) => {{
+        let action = UniProtXmlReader::begin_read_dbreference(&$self.xml_reader, &$start, |ref_type, ref_id| {
             $builder.$begin(ref_type, ref_id)
         })?;
 
-        $self.read_dbreference_properties(|prop_type, prop_value| {
-            $builder.$add_prop(prop_type, prop_value)
-        })?;
+        if let Some(SubfieldsAction::Populate) = action {
+            $self.read_dbreference_properties(|prop_type, prop_value| {
+                $builder.$add_prop(prop_type, prop_value)
+            })?;
+        } else {
+            skip_to_end!($self, $start);
+        }
 
         $builder.$finish();
     }}
 }
 
-macro_rules! read_text {
-    ($self:ident, $builder:ident, $tag:ident, $setter:ident) => {{
-        let end = BytesEnd::new(tags::$tag);
-        let span = $self
-            .xml_reader
-            .read_to_end_into(end.name(), &mut $self.buffer)?;
-        $builder.accession(&$self.decode_span(span)?);
-    }}
-}
 
 impl<R: BufRead> UniProtXmlReader<R> {
     pub fn new(reader: R) -> Self {
@@ -123,18 +224,69 @@ impl<R: BufRead> UniProtXmlReader<R> {
         Self {
             xml_reader,
             buffer: Vec::new(),
+            skip_to_end_buffer: Vec::new(),
         }
     }
 
-    pub fn decode_bytes<'a>(&self, bytes: &'a [u8]) -> XmlResult<Cow<'a, str>> {
-        self.xml_reader.decoder().decode(bytes)
+    fn read_text<OnText>(&mut self, tag: &[u8], mut on_text: OnText) -> XmlResult<()>
+    where
+        OnText: FnMut(&str) -> XmlResult<()>,
+    {
+        loop {
+            match self.xml_reader.read_event_into(&mut self.buffer)? {
+                Event::Start(e) => {
+                    skip_to_end!(self, e);
+                }
+                Event::Text(e) => {
+                    let unescaped = e.unescape()?;
+                    on_text(&unescaped)?;
+                }
+                Event::End(e) => {
+                    assert!(e.name().as_ref() == tag);
+                    break;
+                }
+                Event::Eof => break,
+                _ => {},
+            }
+        }
+
+        Ok(())
     }
 
-    pub fn decode_span(&self, span: Span) -> XmlResult<Cow<'_, str>> {
-        self.decode_bytes(&self.buffer[span])
+    fn find_next_entry_start(&mut self) -> XmlResult<bool> {
+        loop {
+            match self.xml_reader.read_event_into(&mut self.buffer)? {
+                Event::DocType(_) => {}
+                Event::Decl(_) => {}
+                Event::Start(e) => match e.name().as_ref() {
+                    tags::u8::ENTRY => return Ok(true),
+                    tags::u8::UNIPROT => {
+                        // continue (enter)
+                    }
+                    tags::u8::COPYRIGHT => {
+                        skip_to_end!(self, e);
+                    }
+                    name => {
+                        eprintln!("Unknown tag found while scanning entries: {:?}", std::str::from_utf8(name));
+                        skip_to_end!(self, e);
+                    }
+                },
+                Event::End(e) => {
+                    expect_end_of!(UNIPROT, e);
+                }
+                Event::Eof => {
+                    return Ok(false);
+                }
+                evt => {
+                    eprintln!("Unexpected event while scanning entries: {evt:?}");
+                }
+            };
+
+            self.buffer.clear();
+        }
     }
 
-    pub fn into_entries_iter<EB>(self) -> EntriesIter<R, EB> {
+    pub fn into_entries<EB>(self) -> EntriesIter<R, EB> {
         EntriesIter {
             reader: self,
             error: false,
@@ -142,44 +294,18 @@ impl<R: BufRead> UniProtXmlReader<R> {
         }
     }
 
-    fn find_next_entry_start(&mut self) -> XmlResult<bool> {
-        loop {
-            match self.xml_reader.read_event_into(&mut self.buffer)? {
-                Event::DocType(_) => {},
-                Event::Decl(_) => {},
-                Event::Start(e) => {
-                    match e.name().as_ref() {
-                        tags::u8::UNIPROT => {},
-                        tags::u8::ENTRY => return Ok(true),
-                        name => {
-                            eprintln!("Unknown tag found while scanning entries: {name:?}");
-                        },
-                    }
-                },
-                Event::End(e) => {
-                    match e.name().as_ref() {
-                        tags::u8::UNIPROT => {},
-                        name => {
-                            eprintln!("Unknown tag close found while scanning entries: {name:?}");
-                        },
-                    }
-                }
-                Event::Eof => return Ok(false),
-                evt => {
-                    eprintln!("Unexpected event while scanning entries: {evt:?}");
-                }
-            };
-            self.buffer.clear();
-        }
-    }
-
     fn read_next_entry<EB: EntryBuilder>(&mut self) -> XmlResult<Option<EB::Entry>> {
-        if self.find_next_entry_start()? {
-            let mut builder = EB::default();
-            self.read_entry(&mut builder)?;
-            Ok(builder.finish())
-        } else {
-            Ok(None)
+        loop {
+            if self.find_next_entry_start()? {
+                let mut builder = EB::default();
+                self.read_entry(&mut builder)?;
+
+                if let Some(entry) = builder.finish() {
+                    return Ok(Some(entry))
+                }
+            } else {
+                return Ok(None)
+            }
         }
     }
 
@@ -189,10 +315,10 @@ impl<R: BufRead> UniProtXmlReader<R> {
                 Event::Start(e) => {
                     match e.name().as_ref() {
                         tags::u8::ACCESSION => {
-                            read_text!(self, builder, ACCESSION, accession);
+                            set_from_read_text!(self, builder, ACCESSION, accession);
                         }
                         tags::u8::NAME => {
-                            read_text!(self, builder, NAME, name);
+                            set_from_read_text!(self, builder, NAME, name);
                         }
                         tags::u8::DBREFERENCE => {
                             read_dbreference!(self, builder, e,
@@ -202,18 +328,25 @@ impl<R: BufRead> UniProtXmlReader<R> {
                             );
                         }
                         tags::u8::SEQUENCE => {
-                            let end = BytesEnd::new(tags::SEQUENCE);
-                            let span = self
-                                .xml_reader
-                                .read_to_end_into(end.name(), &mut self.buffer)?;
-                            builder.sequence(&self.decode_span(span)?);
+                            set_from_read_text!(self, builder, SEQUENCE, sequence);
                         }
-                        tags::u8::ORGANISM => self.read_organism(builder)?,
-                        _ => {}
+                        tags::u8::ORGANISM => {
+                            if let SubfieldsAction::Populate = builder.begin_organism() {
+                                self.read_organism(builder)?;
+                            } else {
+                                skip_to_end!(self, e);
+                            }
+                            builder.finish_organism();
+                        }
+                        _ => {
+                            skip_to_end!(self, e);
+                        }
                     };
                 }
-                Event::Eof => break,
-                Event::End(e) if e.name().as_ref() == tags::u8::ENTRY => break,
+                Event::End(e) => {
+                    expect_end_of!(ENTRY, e);
+                    break;
+                }
                 evt => {
                     eprintln!("Unexpected event while reading <entry>: {evt:?}");
                 }
@@ -226,16 +359,14 @@ impl<R: BufRead> UniProtXmlReader<R> {
     }
 
     fn read_organism<EB: EntryBuilder>(&mut self, builder: &mut EB) -> XmlResult<()> {
-        builder.begin_organism();
-
         loop {
             match self.xml_reader.read_event_into(&mut self.buffer)? {
                 Event::Start(e) => match e.name().as_ref() {
                     tags::u8::SCIENTIFIC => {
-                        read_text!(self, builder, SCIENTIFIC, organism_scientific_name);
+                        set_from_read_text!(self, builder, SCIENTIFIC, organism_scientific_name);
                     }
                     tags::u8::COMMON => {
-                        read_text!(self, builder, COMMON, organism_common_name);
+                        set_from_read_text!(self, builder, NAME, organism_common_name);
                     }
                     tags::u8::DBREFERENCE => {
                         read_dbreference!(self, builder, e,
@@ -244,10 +375,12 @@ impl<R: BufRead> UniProtXmlReader<R> {
                             finish_organism_dbreference
                         );
                     }
-                    _ => {}
+                    _ => {
+                        skip_to_end!(self, e);
+                    }
                 },
-                Event::End(e) if e.name().as_ref() == b"organism" => {
-                    builder.finish_organism();
+                Event::End(e) => {
+                    expect_end_of!(ORGANISM, e);
                     break;
                 }
                 evt => {
@@ -263,9 +396,11 @@ impl<R: BufRead> UniProtXmlReader<R> {
 
     fn begin_read_dbreference(
         xml_reader: &Reader<R>,
-        start: BytesStart<'_>,
-        begin: impl FnOnce(&str, &str),
-    ) -> XmlResult<()> {
+        start: &BytesStart<'_>,
+        begin: impl FnOnce(&str, &str) -> SubfieldsAction,
+    ) -> XmlResult<Option<SubfieldsAction>> {
+
+        let decoder = xml_reader.decoder();
 
         let mut ref_type = None;
         let mut id = None;
@@ -281,12 +416,12 @@ impl<R: BufRead> UniProtXmlReader<R> {
         }
 
         if let (Some(ref_type), Some(id)) = (ref_type, id) {
-            let ref_type = xml_reader.decoder().decode(&ref_type)?;
-            let id = xml_reader.decoder().decode(&id)?;
-            begin(&ref_type, &id);
+            let ref_type = decoder.decode(&ref_type)?;
+            let id = decoder.decode(&id)?;
+            Ok(Some(begin(&ref_type, &id)))
+        } else {
+            Ok(None)
         }
-
-        Ok(())
     }
 
     fn read_dbreference_properties(
@@ -294,36 +429,41 @@ impl<R: BufRead> UniProtXmlReader<R> {
         mut add_prop: impl FnMut(&str, &str),
     ) -> XmlResult<()> {
         let decoder = self.xml_reader.decoder();
-        let property_end = BytesEnd::new(tags::PROPERTY);
 
         loop {
+            #[allow(clippy::single_match)]
             match self.xml_reader.read_event_into(&mut self.buffer)? {
                 Event::Start(e) => {
-                    if e.name().as_ref() == b"property" {
-                        let mut prop_type = None;
-                        let mut prop_value = None;
+                    match e.name().as_ref() {
+                        tags::u8::PROPERTY => {
+                            let mut prop_type = None;
+                            let mut prop_value = None;
 
-                        for attr in e.attributes() {
-                            let attr = attr?;
+                            for attr in e.attributes() {
+                                let attr = attr?;
 
-                            match attr.key.as_ref() {
-                                attrs::u8::TYPE => prop_type = Some(attr.value),
-                                attrs::u8::VALUE => prop_value = Some(attr.value),
-                                _ => {}
-                            };
+                                match attr.key.as_ref() {
+                                    attrs::u8::TYPE => prop_type = Some(attr.value),
+                                    attrs::u8::VALUE => prop_value = Some(attr.value),
+                                    _ => {}
+                                };
+                            }
+
+                            if let (Some(prop_type), Some(prop_value)) = (prop_type, prop_value) {
+                                let prop_type = decoder.decode(&prop_type)?;
+                                let prop_value = decoder.decode(&prop_value)?;
+                                add_prop(&prop_type, &prop_value);
+                            }
                         }
-
-                        if let (Some(prop_type), Some(prop_value)) = (prop_type, prop_value) {
-                            let prop_type = decoder.decode(&prop_type)?;
-                            let prop_value = decoder.decode(&prop_value)?;
-                            add_prop(&prop_type, &prop_value);
-                        }
+                        _ => {}
                     }
 
-                    self.xml_reader
-                        .read_to_end_into(property_end.name(), &mut self.buffer)?;
+                    skip_to_end!(self, e);
                 }
-                Event::End(e) if e.name().as_ref() == tags::u8::DBREFERENCE => break,
+                Event::End(e) => {
+                    expect_end_of!(DBREFERENCE, e);
+                    break;
+                }
                 evt => {
                     eprintln!("Unexpected event while reading <dbReference>: {evt:?}");
                 }

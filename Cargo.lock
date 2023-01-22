@@ -889,6 +889,7 @@ dependencies = [
  "newick-rs",
  "ordered-float",
  "polars",
+ "progress-streams",
  "quick-xml",
  "rayon",
  "regex 1.7.1",
@@ -1326,6 +1327,12 @@ checksum = "57a8eca9f9c4ffde41714334dee777596264c7825420f521abc92b5b5deb63a5"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "progress-streams"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e965d96c8162c607b0cd8d66047ad3c9fd35273c134d994327882c6e47f986a7"
 
 [[package]]
 name = "quick-xml"

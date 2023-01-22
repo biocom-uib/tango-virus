@@ -1,15 +1,22 @@
-use std::{fs::{self, File}, path::{Path, PathBuf}, io::{self, BufReader, Write, ErrorKind}, sync::mpsc::Receiver, process};
+use std::{fs::{self, File}, path::{Path, PathBuf}, io::{BufReader, Write, ErrorKind}, sync::mpsc::{Receiver, SyncSender}, process, time::Duration};
 
 use anyhow::{Context, anyhow};
-use clap::Args;
+use clap::{Args, ArgGroup};
 use flate2::bufread::GzDecoder;
 use ftp::FtpStream;
-use itertools::{Itertools, process_results};
 
-use super::uniprot_xml_parser::{UniProtXmlReader, EntryBuilder, dbref_types};
+use crate::util::progress_monitor;
+
+use super::uniprot_xml_parser::{UniProtXmlReader, EntryBuilder, dbref_types, SubfieldsAction, IdentityBuilder};
 
 /// Prepare a BLAST database using UniProt protein sequences
 #[derive(Args)]
+#[clap(group(
+        ArgGroup::new("makebastdb")
+            .required(true)
+            .multiple(true)
+            .args(&["skip_makeblastdb", "output"])
+))]
 pub struct PrepareUniProtBlastDBArgs {
     /// UniProt divisions to include. Example: viruses. See https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/taxonomic_divisions/README
     #[clap(num_args = 1..)]
@@ -17,13 +24,13 @@ pub struct PrepareUniProtBlastDBArgs {
 
     /// Do not include SwissProt proteins
     #[clap(long)]
-    skip_swissprot: bool,
+    exclude_swissprot: bool,
 
     /// Do not include TrEMBL proteins
     #[clap(long)]
-    skip_trembl: bool,
+    exclude_trembl: bool,
 
-    /// Always re-download exiting files
+    /// Always re-download existing files
     #[clap(long)]
     force_download: bool,
 
@@ -31,11 +38,14 @@ pub struct PrepareUniProtBlastDBArgs {
     #[clap(long, short = 'd')]
     work_dir: String,
 
-    /// Output BLAST DB path
-    #[clap(short, long)]
-    output: String,
-}
+    /// Do not run makeblastdb, just set up input files
+    #[clap(long)]
+    skip_makeblastdb: bool,
 
+    /// Output BLAST DB path. Default: <WORK_DIR>/blastdb
+    #[clap(short, long)]
+    output: Option<String>,
+}
 
 const FTP_SERVER: &str = "ftp.uniprot.org:21";
 const REMOTE_DIVISIONS_DIRECTORY: &str = "/pub/databases/uniprot/current_release/knowledgebase/taxonomic_divisions";
@@ -78,11 +88,11 @@ fn fetch(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<Vec<PathBuf>> {
     let dbs = {
         let mut dbs = Vec::new();
 
-        if !args.skip_swissprot {
+        if !args.exclude_swissprot {
             dbs.push(SWISSPROT_FILE_NAME_PART);
         }
 
-        if !args.skip_trembl {
+        if !args.exclude_trembl {
             dbs.push(TREMBL_FILE_NAME_PART);
         }
 
@@ -107,15 +117,30 @@ fn fetch(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<Vec<PathBuf>> {
 
                 println!("Downloading {file_name:?} to {file_path:?}");
 
+                let file_size = conn.size(&file_name)?.ok_or(anyhow!(
+                    "File {file_name:?} does not exist in the FTP server"
+                ))?;
+
                 conn.retr(&file_name, |reader| {
-                    let r =
-                        File::create(&file_path).and_then(|mut file| io::copy(reader, &mut file));
+                    let io_res = File::create(&file_path).and_then(|file_writer| {
+                        progress_monitor::monitor_copy(
+                            reader,
+                            file_writer,
+                            Duration::from_secs(1),
+                            progress_monitor::default_progress_callback(file_size as u64),
+                            progress_monitor::default_finish_callback(),
+                        )
+                    });
 
-                    Ok(r)
+                    println!();
+
+                    Ok(io_res)
                 })??;
-
-                paths.push(file_path);
+            } else {
+                println!("File {file_name:?} is already present as {file_path:?}, skipping (delete it or use --force-download to re-download)");
             }
+
+            paths.push(file_path);
         }
     }
 
@@ -126,32 +151,14 @@ fn fetch(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn load_compressed_uniprot_division(path: &Path) -> anyhow::Result<UniProtXmlReader<BufReader<GzDecoder<BufReader<File>>>>> {
-    let file = File::open(path)?;
-    let decoder = GzDecoder::new(BufReader::new(file));
-    let reader = UniProtXmlReader::new(BufReader::new(decoder));
-
-    Ok(reader)
-}
-
-//struct LazyIntoIterator<T, F: FnOnce() -> T>(F);
-
-//impl<T: IntoIterator, F: FnOnce() -> T> IntoIterator for LazyIntoIterator<T, F> {
-//    type Item = T::Item;
-//    type IntoIter = T::IntoIter;
-
-//    fn into_iter(self) -> Self::IntoIter {
-//        self.0().into_iter()
-//    }
-//}
-
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct UniProtEntryBuilder {
     primary_accession: Option<String>,
     taxid: Option<i64>,
     sequence: Option<String>,
 }
 
+#[derive(Debug)]
 struct UniProtEntry {
     primary_accession: String,
     taxid: i64,
@@ -165,29 +172,21 @@ impl EntryBuilder for UniProtEntryBuilder {
         self.primary_accession.get_or_insert_with(|| acc.to_owned());
     }
 
-    fn name(&mut self, _name: &str) {}
-
     fn sequence(&mut self, sequence: &str) {
         self.sequence.get_or_insert_with(|| sequence.to_owned());
     }
 
-    fn begin_dbreference(&mut self, _ref_type: &str, _ref_id: &str) {}
-    fn dbreference_property(&mut self, _prop_type: &str, _prop_value: &str) {}
-    fn finish_dbreference(&mut self) {}
+    fn begin_organism(&mut self) -> SubfieldsAction {
+        SubfieldsAction::Populate
+    }
 
-    fn begin_organism(&mut self) {}
-    fn organism_scientific_name(&mut self, _name: &str) {}
-    fn organism_common_name(&mut self, _name: &str) {}
-
-    fn begin_organism_dbreference(&mut self, ref_type: &str, ref_id: &str) {
+    fn begin_organism_dbreference(&mut self, ref_type: &str, ref_id: &str) -> SubfieldsAction {
         if self.taxid.is_none() && ref_type == dbref_types::NCBI_TAXONOMY {
             self.taxid = ref_id.parse().ok();
         }
-    }
 
-    fn organism_dbreference_property(&mut self, _prop_type: &str, _prop_value: &str) {}
-    fn finish_organism_dbreference(&mut self) {}
-    fn finish_organism(&mut self) {}
+        SubfieldsAction::Skip
+    }
 
     fn finish(self) -> Option<Self::Entry> {
         Some(UniProtEntry {
@@ -198,9 +197,61 @@ impl EntryBuilder for UniProtEntryBuilder {
     }
 }
 
-
 const FASTA_FILE_NAME: &str = "sequences.fa";
 const TAXID_MAP_FILE_NAME: &str = "taxid.tab";
+
+fn read_all_entries<P: AsRef<Path>>(
+    paths: &[P],
+    sseq: SyncSender<(String, String)>,
+    smap: SyncSender<(String, i64)>,
+) -> anyhow::Result<()> {
+    struct UniProtEntryReader<F: FnMut(UniProtEntry) -> anyhow::Result<()>>(F);
+
+    impl<F> progress_monitor::ReaderConsumer for UniProtEntryReader<F>
+    where
+        F: FnMut(UniProtEntry) -> anyhow::Result<()>,
+    {
+        type Output = anyhow::Result<()>;
+
+        fn read_from<R: std::io::Read>(mut self, reader: R) -> Self::Output {
+            let decoder = GzDecoder::new(BufReader::new(reader));
+
+            let uniprot_reader = UniProtXmlReader::new(BufReader::new(decoder));
+
+            for entry in uniprot_reader.into_entries::<UniProtEntryBuilder>() {
+                (self.0)(entry?)?;
+            }
+
+            Ok(())
+        }
+    }
+
+    for path in paths {
+        let path = path.as_ref();
+
+        let path_str = path.to_string_lossy();
+        println!("Loading {}", &path_str);
+
+        let file_size = fs::metadata(path)
+            .context(format!("Querying the size of {path_str}"))?
+            .len();
+
+        progress_monitor::monitor_reader(
+            File::open(path).context(format!("Opening UniProt XML {path:?}"))?,
+            Duration::from_secs(1),
+            progress_monitor::default_progress_callback(file_size),
+            progress_monitor::default_finish_callback(),
+            UniProtEntryReader(|entry| {
+                sseq.send((entry.primary_accession.clone(), entry.sequence))?;
+                smap.send((entry.primary_accession, entry.taxid))?;
+                Ok(())
+            }),
+        )
+        .context(format!("Reading UniProt entries from {path_str}"))?;
+    }
+
+    anyhow::Ok(())
+}
 
 fn write_sequences(fasta_path: &Path, rseq: Receiver<(String, String)>) -> anyhow::Result<()> {
     let mut fasta_file = File::create(fasta_path)?;
@@ -228,37 +279,17 @@ fn write_taxid_mapping(taxid_map_path: &Path, rmap: Receiver<(String, i64)>) -> 
 }
 
 fn prepare_files_for_makeblastdb(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<()> {
-    let paths = fetch(args).context("Downloading UniProt division files")?;
-
     let work_dir = Path::new(&args.work_dir);
     let fasta_path = work_dir.join(FASTA_FILE_NAME);
     let taxid_map_path = work_dir.join(TAXID_MAP_FILE_NAME);
 
-    let all_entries = paths
-        .iter()
-        .map(|path| {
-            let reader = load_compressed_uniprot_division(path).context("Loading {path:?}")?;
-            Ok(reader
-                .into_entries_iter::<UniProtEntryBuilder>()
-                .map(|entry| entry.context("Processing entries in {path:?}")))
-        })
-        .flatten_ok()
-        .map(|entry| entry.flatten());
+    let paths = fetch(args).context("Downloading UniProt division files")?;
 
     let (sseq, rseq) = std::sync::mpsc::sync_channel(100);
     let (smap, rmap) = std::sync::mpsc::sync_channel(1000);
 
     let (processing_errors, (fasta_errors, taxid_map_errors)) = rayon::join(
-        move || {
-            process_results(all_entries, |all_entries| {
-                for entry in all_entries {
-                    sseq.send((entry.primary_accession.clone(), entry.sequence))?;
-                    smap.send((entry.primary_accession, entry.taxid))?;
-                }
-                Ok(())
-            })
-            .and_then(|r| r)
-        },
+        move || read_all_entries(&paths, sseq, smap),
         move || {
             rayon::join(
                 move || write_sequences(&fasta_path, rseq),
@@ -267,7 +298,7 @@ fn prepare_files_for_makeblastdb(args: &PrepareUniProtBlastDBArgs) -> anyhow::Re
         },
     );
 
-    processing_errors.context("Processing XML entries")?;
+    processing_errors.context("Processing UniProt XML files")?;
     fasta_errors.context("Writing the FASTA file")?;
     taxid_map_errors.context("Writing the TAXID mapping file")?;
 
@@ -275,46 +306,69 @@ fn prepare_files_for_makeblastdb(args: &PrepareUniProtBlastDBArgs) -> anyhow::Re
 }
 
 pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Result<()> {
-    if !ensure_makeblastdb_is_executable()? {
-        anyhow::bail!("makeblastdb executable not found, please make sure that BLAST+ is installed");
+    if !args.skip_makeblastdb && !ensure_makeblastdb_is_executable()? {
+        anyhow::bail!(
+            "makeblastdb executable not found, please make sure that BLAST+ is installed"
+        );
     }
 
     println!("Preparing makeblastdb input files from UniProt divisions");
 
-    prepare_files_for_makeblastdb(&args)
-        .context("Preparing files for makeblastdb")?;
+    prepare_files_for_makeblastdb(&args).context("Preparing files for makeblastdb")?;
 
     let work_dir = Path::new(&args.work_dir);
     let fasta_path = work_dir.join(FASTA_FILE_NAME);
     let taxid_map_path = work_dir.join(TAXID_MAP_FILE_NAME);
 
-    let db_path = Path::new(&args.output);
+    let fasta_path = fasta_path
+        .to_str()
+        .ok_or(anyhow!("FASTA path contains invalid unicode"))?;
+
+    let taxid_map_path = taxid_map_path
+        .to_str()
+        .ok_or(anyhow!("TAXID mapping path contains invalid unicode"))?;
+
+    let db_path = args
+        .output
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or(work_dir.join("blastdb"));
 
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let fasta_path = fasta_path.to_str().ok_or(anyhow!("FASTA path contains invalid unicode"))?;
-    let taxid_map_path = taxid_map_path.to_str().ok_or(anyhow!("TAXID mapping path contains invalid unicode"))?;
+    let output = &*db_path.to_string_lossy();
 
-    println!("Running makeblastdb");
+    let mut makeblastdb_command = process::Command::new("makeblastdb");
 
-    let makeblastdb_status = process::Command::new("makeblastdb")
+    makeblastdb_command
         .arg("-parse_seqids")
         .args(["-input_type", "fasta"])
         .args(["-in", fasta_path])
         .args(["-taxid_map", taxid_map_path])
-        .args(["-out", &args.output])
-        .stdin(process::Stdio::null())
-        .status()
-        .context("Executing makeblastdb")?;
+        .args(["-out", output])
+        .stdin(process::Stdio::null());
 
-    if makeblastdb_status.success() {
-        println!("makeblastdb finished successfully");
-    } else if let Some(code) = makeblastdb_status.code() {
-        println!("makeblastdb finished with exit code {code}");
+    if args.skip_makeblastdb {
+        println!("TAXID mapping file written to {taxid_map_path}");
+        println!("Sequences written to {fasta_path}");
+
+        println!("Recommended command: {makeblastdb_command:?}");
     } else {
-        println!("makeblastdb was interrupted");
+        println!("Executing: {makeblastdb_command:?}");
+
+        let makeblastdb_status = makeblastdb_command
+            .status()
+            .context("Executing makeblastdb")?;
+
+        if makeblastdb_status.success() {
+            println!("makeblastdb finished successfully");
+        } else if let Some(code) = makeblastdb_status.code() {
+            println!("makeblastdb finished with exit code {code}");
+        } else {
+            println!("makeblastdb was interrupted");
+        }
     }
 
     Ok(())
