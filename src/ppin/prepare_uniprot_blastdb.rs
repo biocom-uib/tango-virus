@@ -7,14 +7,13 @@ use ftp::FtpStream;
 
 use crate::util::progress_monitor;
 
-use super::uniprot_xml_parser::{UniProtXmlReader, EntryBuilder, dbref_types, SubfieldsAction, IdentityBuilder};
+use super::uniprot_xml_parser::{UniProtXmlReader, EntryBuilder, dbref_types, SubfieldsAction};
 
 /// Prepare a BLAST database using UniProt protein sequences
 #[derive(Args)]
 #[clap(group(
         ArgGroup::new("makebastdb")
-            .required(true)
-            .multiple(true)
+            .multiple(false)
             .args(&["skip_makeblastdb", "output"])
 ))]
 pub struct PrepareUniProtBlastDBArgs {
@@ -106,6 +105,7 @@ fn fetch(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<Vec<PathBuf>> {
     for db in dbs {
         for division in &args.uniprot_divisions {
             let file_name = format_uniprot_division_file_name!(db: db, division: division);
+            let remote_path = format!("{REMOTE_DIVISIONS_DIRECTORY}/{file_name}");
             let file_path = work_dir.join(&file_name);
 
             if args.force_download || !file_path.exists() {
@@ -115,7 +115,7 @@ fn fetch(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<Vec<PathBuf>> {
                     ftp_conn.insert(ftp_connect()?)
                 };
 
-                println!("Downloading {file_name:?} to {file_path:?}");
+                println!("Downloading {remote_path:?} to {file_path:?}");
 
                 let file_size = conn.size(&file_name)?.ok_or(anyhow!(
                     "File {file_name:?} does not exist in the FTP server"
@@ -345,6 +345,7 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
     makeblastdb_command
         .arg("-parse_seqids")
         .args(["-input_type", "fasta"])
+        .args(["-dbtype", "prot"])
         .args(["-in", fasta_path])
         .args(["-taxid_map", taxid_map_path])
         .args(["-out", output])
