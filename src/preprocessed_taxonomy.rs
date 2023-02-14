@@ -128,10 +128,11 @@ impl PreprocessedTaxonomy {
 #[derive(Args)]
 pub struct PreprocessedTaxonomyArgs {
     /// Format in which the preprocessed taxonomy was serialized.
-    #[clap(long, value_enum, default_value_t)]
+    #[clap(long, value_enum, default_value_t, env = "METEOR_TAXONOMY_FORMAT")]
     taxonomy_format: PreprocessedTaxonomyFormat,
 
     /// Path to the preprocessed taxonomy (from preprocess-taxonomy)
+    #[clap(long = "taxonomy", env = "METEOR_TAXONOMY")]
     preprocessed_taxonomy: String,
 }
 

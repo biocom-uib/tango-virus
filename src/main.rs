@@ -15,6 +15,7 @@ pub(crate) mod preprocessed_taxonomy;
 pub(crate) mod filter;
 pub(crate) mod util;
 
+mod crispr;
 mod get_lineage;
 mod preprocess_blastout;
 mod preprocess_taxonomy;

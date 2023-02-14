@@ -463,10 +463,7 @@ pub fn preprocess_blastout(args: PreprocessBlastOutArgs) -> anyhow::Result<()> {
     };
 
     let mut grouped = if let Some(weight_col) = &args.weight_col {
-        let weight_col_agg = args
-            .weight_col_agg
-            .unwrap_or(WeightColAgg::Max)
-            .into_expr_fn();
+        let weight_col_agg = args.weight_col_agg.into_expr_fn();
 
         group_blast_hits_with_weights(
             df,
