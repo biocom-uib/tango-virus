@@ -1,3 +1,8 @@
+pub mod blastout;
+pub mod cli_tools;
+pub mod csv_stream;
+pub mod filter;
+pub mod interned_mapping;
 pub mod progress_monitor;
 
 macro_rules! writing_new_file_or_stdout {

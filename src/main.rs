@@ -1,4 +1,5 @@
 #![feature(
+    absolute_path,
     associated_type_defaults,
     hash_raw_entry,
     hash_set_entry,
@@ -13,10 +14,9 @@ use clap::{Parser, Subcommand};
 pub mod taxonomy;
 pub(crate) mod preprocessed_taxonomy;
 
-pub(crate) mod filter;
 pub(crate) mod util;
 
-mod crispr;
+mod crispr_match;
 mod ppin;
 mod get_lineage;
 mod preprocess_blastout;
@@ -27,10 +27,11 @@ mod tango_assign;
 #[derive(Subcommand)]
 enum Commands {
     PreprocessTaxonomy(preprocess_taxonomy::PreprocessTaxonomyArgs),
-    GetLineage(get_lineage::GetLineageArgs),
     PreprocessBlastout(preprocess_blastout::PreprocessBlastOutArgs),
     TangoAssign(tango_assign::TangoAssignArgs),
     RefineVpfClass(refine_vpf_class::RefineVpfClassArgs),
+    CrisprMatch(crispr_match::CrisprMatchArgs),
+    GetLineage(get_lineage::GetLineageArgs),
     PrepareUniprotBlastdb(ppin::prepare_uniprot_blastdb::PrepareUniProtBlastDBArgs),
 }
 
@@ -62,6 +63,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::PrepareUniprotBlastdb(args) => {
             ppin::prepare_uniprot_blastdb::prepare_uniprot_blastdb(args)?;
+        }
+        Commands::CrisprMatch(args) => {
+            crispr_match::crispr_match(args)?;
         }
     }
 

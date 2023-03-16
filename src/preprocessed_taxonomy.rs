@@ -45,9 +45,9 @@ macro_rules! with_some_ncbi_or_newick_taxonomy {
         $(,)?
     ) => {
         match $some_taxonomy {
-            SomeTaxonomy::NcbiTaxonomyWithSingleClassNames($ncbi_tax) => $ncbi_body,
-            SomeTaxonomy::NcbiTaxonomyWithManyNames($ncbi_tax) => $ncbi_body,
-            SomeTaxonomy::NewickTaxonomy($newick_tax) => $newick_body,
+            crate::preprocessed_taxonomy::SomeTaxonomy::NcbiTaxonomyWithSingleClassNames($ncbi_tax) => $ncbi_body,
+            crate::preprocessed_taxonomy::SomeTaxonomy::NcbiTaxonomyWithManyNames($ncbi_tax) => $ncbi_body,
+            crate::preprocessed_taxonomy::SomeTaxonomy::NewickTaxonomy($newick_tax) => $newick_body,
         }
     };
 }

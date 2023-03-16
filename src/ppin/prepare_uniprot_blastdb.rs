@@ -1,21 +1,17 @@
-use std::{fs::{self, File}, path::{Path, PathBuf}, io::{BufReader, Write, ErrorKind}, sync::mpsc::{Receiver, SyncSender}, process, time::Duration};
+use std::{fs::{self, File}, path::{Path, PathBuf}, io::{BufReader, Write}, sync::mpsc::{Receiver, SyncSender}, process, time::Duration};
 
 use anyhow::{Context, anyhow};
 use clap::{Args, ArgGroup};
 use flate2::bufread::GzDecoder;
 use ftp::FtpStream;
 
-use crate::util::progress_monitor;
+use crate::util::{progress_monitor, cli_tools::{BlastTool, CliTool}};
 
 use super::uniprot_xml_parser::{UniProtXmlReader, EntryBuilder, dbref_types, SubfieldsAction};
 
 /// Prepare a BLAST database using UniProt protein sequences
 #[derive(Args)]
-#[clap(group(
-        ArgGroup::new("makebastdb")
-            .multiple(false)
-            .args(&["skip_makeblastdb", "output"])
-))]
+#[clap(group(ArgGroup::new("makebastdb").multiple(false)))]
 pub struct PrepareUniProtBlastDBArgs {
     /// UniProt divisions to include. Example: viruses. See https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/taxonomic_divisions/README
     #[clap(num_args = 1..)]
@@ -38,11 +34,15 @@ pub struct PrepareUniProtBlastDBArgs {
     work_dir: String,
 
     /// Do not run makeblastdb, just set up input files
-    #[clap(long)]
+    #[clap(long, group = "makeblastdb")]
     skip_makeblastdb: bool,
 
+    /// Installation prefix of the NCBI BLAST+ toolkit to use.
+    #[clap(long)]
+    blast_prefix: Option<String>,
+
     /// Output BLAST DB path. Default: <WORK_DIR>/blastdb
-    #[clap(short, long)]
+    #[clap(short, long, group = "makeblastdb")]
     output: Option<String>,
 }
 
@@ -57,20 +57,6 @@ macro_rules! format_uniprot_division_file_name {
     }
 }
 
-
-fn ensure_makeblastdb_is_executable() -> anyhow::Result<bool> {
-    let result = process::Command::new("makeblastdb")
-        .arg("-version")
-        .stdin(process::Stdio::null())
-        .stdout(process::Stdio::null())
-        .stderr(process::Stdio::null())
-        .status();
-
-    match &result {
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
-        _ => Ok(result?.success()),
-    }
-}
 
 fn ftp_connect() -> anyhow::Result<FtpStream> {
     let mut conn = FtpStream::connect(FTP_SERVER)?;
@@ -305,12 +291,38 @@ fn prepare_files_for_makeblastdb(args: &PrepareUniProtBlastDBArgs) -> anyhow::Re
     Ok(())
 }
 
+pub fn print_sample_blastp_command(args: &PrepareUniProtBlastDBArgs, blast_prefix: Option<&Path>, db_path: &Path) -> anyhow::Result<()> {
+    let (found, mut cmd) = if let Some(blastp_tool) = BlastTool::resolve(blast_prefix, "blastp")? {
+        (true, blastp_tool.new_command())
+    } else {
+        (false, process::Command::new("blastp"))
+    };
+
+    cmd
+        .arg("-db")
+        .arg(db_path)
+        .arg("-query")
+        .arg("PATH_TO_VIRAL_PROTEINS_FASTA")
+        .arg("-outfmt")
+        .arg("7 qseqid sseqid staxid evalue pident")
+        .arg("-out")
+        .arg("PATH_TO_BLAST_OUTPUT");
+
+    Ok(())
+}
+
 pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Result<()> {
-    if !args.skip_makeblastdb && !ensure_makeblastdb_is_executable()? {
+    let blast_prefix = args.blast_prefix.as_ref().map(|s| s.as_ref());
+
+    let mut makeblastdb_command = if args.skip_makeblastdb {
+        process::Command::new("makeblastdb") // for display purposes only
+    } else if let Some(tool) = BlastTool::resolve(blast_prefix, "makeblastdb")? {
+        tool.new_command()
+    } else {
         anyhow::bail!(
             "makeblastdb executable not found, please make sure that BLAST+ is installed"
         );
-    }
+    };
 
     println!("Preparing makeblastdb input files from UniProt divisions");
 
@@ -340,8 +352,6 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
 
     let output = &*db_path.to_string_lossy();
 
-    let mut makeblastdb_command = process::Command::new("makeblastdb");
-
     makeblastdb_command
         .arg("-parse_seqids")
         .args(["-input_type", "fasta"])
@@ -356,6 +366,8 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
         println!("Sequences written to {fasta_path}");
 
         println!("Recommended command: {makeblastdb_command:?}");
+
+
     } else {
         println!("Executing: {makeblastdb_command:?}");
 
@@ -371,6 +383,8 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
             println!("makeblastdb was interrupted");
         }
     }
+
+
 
     Ok(())
 }

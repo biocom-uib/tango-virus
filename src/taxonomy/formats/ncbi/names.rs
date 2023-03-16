@@ -67,6 +67,7 @@ impl AllNames {
         Ok(this)
     }
 
+    #[allow(clippy::result_large_err)]
     pub fn only_of_class(self, name_class: &str) -> Result<SingleClassNames, Self> {
         let single_class = if let Some(sym) = self.name_classes.get(name_class) {
             sym.into()

@@ -10,14 +10,13 @@ use itertools::Itertools;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
-use crate::preprocess_blastout;
 use crate::preprocessed_taxonomy::{
     with_some_ncbi_or_newick_taxonomy, with_some_taxonomy, PreprocessedTaxonomy,
-    PreprocessedTaxonomyArgs, SomeTaxonomy,
+    PreprocessedTaxonomyArgs,
 };
 use crate::taxonomy::formats::ncbi::{NamesAssoc, NcbiTaxonomy};
 use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
-use crate::util::writing_new_file_or_stdout;
+use crate::util::{blastout, writing_new_file_or_stdout};
 
 #[derive(Clone, Debug, Default)]
 struct TaxonAnnotations {
@@ -331,9 +330,9 @@ fn load_reads_and_produce_assignments(
 
     with_some_ncbi_or_newick_taxonomy!(&taxonomy.tree,
         ncbi: tax => {
-            if header.subjects_id_col == preprocess_blastout::fields::STAXID.0 {
+            if header.subjects_id_col == blastout::fields::STAXID.0 {
                 produce_assignments_with!(tax, ncbi_taxonomy_lookup_taxid_leaf(tax))?;
-            } else if header.subjects_id_col == preprocess_blastout::fields::SSCINAME.0 {
+            } else if header.subjects_id_col == blastout::fields::SSCINAME.0 {
                 produce_assignments_with!(tax, labelled_taxonomy_lookup_taxid_leaf(tax))?;
             } else {
                 anyhow::bail!("Unable to map read subject ID's ({}) to NCBI Taxonomy ID's", &header.subjects_id_col)

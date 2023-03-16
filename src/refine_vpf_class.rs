@@ -12,12 +12,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    preprocessed_taxonomy::{with_some_taxonomy, PreprocessedTaxonomyArgs},
     tango_assign::AssignmentRecord,
-    filter::{self, FromStrFilter},
-    preprocessed_taxonomy::{
-        with_some_taxonomy, PreprocessedTaxonomyArgs,
-    },
     taxonomy::{LabelledTaxonomy, NodeId, Taxonomy},
+    util::filter::{self, FromStrFilter},
     util::writing_new_file_or_stdout,
 };
 
