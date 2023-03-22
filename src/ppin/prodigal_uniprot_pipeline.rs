@@ -1,11 +1,14 @@
-use std::{hash::Hash, path::{PathBuf, Path, self}, process::Command, io, marker::PhantomData, fs::File};
+use std::{path::{PathBuf, Path, self}, process::Command, io, fs::File};
 
 use anyhow::Context;
+use clap::Args;
 use regex::Regex;
 use serde::Deserialize;
-use string_interner::StringInterner;
+use tempdir::TempDir;
 
-use crate::util::{cli_tools::{self, CliTool}, interned_mapping::{Interner, InternedMultiMapping}};
+use crate::util::{cli_tools::{self, CliTool}, interned_mapping::InternedMultiMapping, writing_new_file_or_stdout};
+
+use super::ProteinVirusTaxidMapping;
 
 const FAA_FILE_NAME: &str = "predicted_viral_proteins.faa";
 
@@ -19,28 +22,28 @@ const BLASTOUT_FILE_NAME: &str = "uniprot_viral_search.blastout";
 
 
 #[derive(Deserialize)]
-struct ProteinProteinTaxidRecord<'a> {
-    predicted_name: &'a str,
-    uniprot_name: &'a str,
-    taxid: i64,
+struct ProteinProteinTaxidRecord<S = String> {
+    predicted_name: S,
+    uniprot_accession: S,
+    taxid: usize,
 }
 
 pub struct ProdigalBlastpPipeline {
-    work_dir: PathBuf,
     prodigal: cli_tools::Prodigal,
     prodigal_procedure: String,
     blastp: cli_tools::BlastTool,
+    work_dir: PathBuf,
     blastp_num_threads: Option<i32>,
     dry_run: bool,
 }
 
 impl ProdigalBlastpPipeline {
-    pub fn new(work_dir: PathBuf, prodigal: cli_tools::Prodigal, blastp: cli_tools::BlastTool) -> Self {
+    pub fn new(prodigal: cli_tools::Prodigal, blastp: cli_tools::BlastTool, work_dir: PathBuf) -> Self {
         Self {
-            work_dir,
             prodigal,
             prodigal_procedure: DEFAULT_PRODIGAL_PROCEDURE.to_owned(),
             blastp,
+            work_dir,
             blastp_num_threads: None,
             dry_run: false,
         }
@@ -96,7 +99,7 @@ impl ProdigalBlastpPipeline {
         &self,
         viral_seqs: &Path,
         uniprot_blastdb: &Path,
-        perc_identity: Option<i32>,
+        perc_identity: i32,
     ) -> anyhow::Result<()> {
 
         if self.work_dir.join(FAA_FILE_NAME).exists() {
@@ -122,7 +125,6 @@ impl ProdigalBlastpPipeline {
                 search. Delete the file to re-generate it");
 
         } else {
-            let perc_identity = perc_identity.unwrap_or(DEFAULT_PERC_IDENTITY);
             let mut blastp_cmd = self.blastp_cmd(uniprot_blastdb, perc_identity)?;
 
             eprintln!("Running {blastp_cmd:?}");
@@ -140,40 +142,19 @@ impl ProdigalBlastpPipeline {
     }
 }
 
-
-#[derive(Default)]
-struct PrjInterner<T: Default + Copy + Eq + Ord + Hash, I: Interner>(I, PhantomData<T>);
-
-impl<T: Copy + Default + Eq + Ord + Hash, I: Interner> Interner for PrjInterner<T, I> {
-    type Value<'a> = (I::Value<'a>, T);
-
-    type Symbol = (I::Symbol, T);
-
-    fn get_or_intern(&mut self, (value, x): Self::Value<'_>) -> Self::Symbol {
-        (self.0.get_or_intern(value), x)
-    }
-
-    fn resolve(&self, (sym, x): Self::Symbol) -> Option<Self::Value<'_>> {
-        Some((self.0.resolve(sym)?, x))
-    }
-}
-
-pub struct VirusProteinTaxidMapping(InternedMultiMapping::<PrjInterner<i64, StringInterner>>);
-
 impl ProdigalBlastpPipeline {
-    pub fn collect_viral_protein_mapping(&self) -> anyhow::Result<VirusProteinTaxidMapping> {
+    pub fn collect_viral_protein_mapping(&self) -> anyhow::Result<ProteinVirusTaxidMapping> {
         let protein_virus_name_regex =
             Regex::new(PROTEIN_VIRUS_NAME_REGEX).expect("Error compiling PROTEIN_VIRUS_NAME_REGEX");
 
         let file_reader = File::open(self.work_dir.join(BLASTOUT_FILE_NAME))?;
 
         let mapping = InternedMultiMapping::read_tsv_with(file_reader, false, |record| {
-            let record = record.deserialize::<ProteinProteinTaxidRecord>(None)?;
+            let record = record.deserialize::<ProteinProteinTaxidRecord<&str>>(None)?;
 
             if let Some(suffix_match) = protein_virus_name_regex.find(record.predicted_name) {
                 let virus_name = &record.predicted_name[..suffix_match.start()];
-
-                Ok((virus_name, (record.uniprot_name, record.taxid)))
+                Ok((record.uniprot_accession, (virus_name, record.taxid)))
             } else {
                 anyhow::bail!(
                     "Could not parse virus name from blast output: {:?}",
@@ -183,6 +164,100 @@ impl ProdigalBlastpPipeline {
         })
         .context("Reading BLAST+ blastp output")?;
 
-        Ok(VirusProteinTaxidMapping(mapping))
+        Ok(ProteinVirusTaxidMapping(mapping))
     }
+}
+
+
+/// Extract viral proteins and search them in a UniProt BLAST+ database.
+#[derive(Args)]
+pub struct MatchViralProteinsArgs {
+    /// Directory to use to prepare the inputs for makeblastdb. A temporary directory is used by
+    /// default.
+    #[clap(long)]
+    work_dir: Option<String>,
+
+    /// Do not actually run any external tools, print the command instead.
+    #[clap(long)]
+    dry_run: bool,
+
+    /// Path to the prodigal executable if not in PATH.
+    #[clap(long, help_heading = Some("Prodigal Options"))]
+    prodigal_bin: Option<String>,
+
+    /// Prodigal procedure (Prodigal 2.x -p flag) to use.
+    #[clap(long, help_heading = Some("Prodigal Options"), default_value = "meta")]
+    prodigal_procedure: String,
+
+    /// Installation prefix of the NCBI BLAST+ toolkit to use.
+    #[clap(long, help_heading = Some("BLAST Options"))]
+    blast_prefix: Option<String>,
+
+    /// Location of the UniProt BLAST+ database. See `meteor ppi prepare-uniprot-blastdb`.
+    #[clap(long, help_heading = Some("BLAST Options"))]
+    uniprot_blastdb: String,
+
+    /// Minimum hit identity % for the blastn search (0-100).
+    #[clap(long, help_heading = Some("BLAST Options"), default_value_t = DEFAULT_PERC_IDENTITY)]
+    perc_identity: i32,
+
+    /// Number of threads (blastp -num_threads option).
+    #[clap(long, help_heading = Some("BLAST Options"))]
+    num_threads: Option<i32>,
+
+    /// Input FASTA of viral contigs.
+    viral_seqs: String,
+
+    /// Output path. The result is a tab-separated values file containing three columns:
+    /// virus_name, uniprot_accession and taxid. Use '-' to print to standard output.
+    #[clap(short, long, default_value = "-")]
+    output: String,
+}
+
+pub fn match_viral_proteins(args: MatchViralProteinsArgs) -> anyhow::Result<()> {
+    let prodigal_bin = args.prodigal_bin.as_ref().map(|s| s.as_ref());
+
+    let Some(prodigal) = cli_tools::Prodigal::resolve(prodigal_bin)? else {
+        anyhow::bail!("Could not locate a Prodigal executable");
+    };
+
+    let blast_prefix = args.blast_prefix.as_ref().map(|s| s.as_ref());
+
+    let Some(blastp) = cli_tools::BlastTool::resolve(blast_prefix, "blastp")? else {
+        anyhow::bail!("Could not find a blastp executable");
+    };
+
+    let mut temp_dir = None;
+
+    let work_dir = if let Some(work_dir) = &args.work_dir {
+        Path::new(work_dir)
+    } else {
+        temp_dir.insert(TempDir::new("match-viral-proteins")?).path()
+    };
+
+    let run_pipeline = || {
+        let mut pipeline = ProdigalBlastpPipeline::new(prodigal, blastp, work_dir.to_path_buf());
+        pipeline.set_dry_run(args.dry_run);
+        pipeline.set_prodigal_procedure(&args.prodigal_procedure);
+        pipeline.set_blastp_num_threads(args.num_threads);
+        pipeline.find_and_match_proteins(args.viral_seqs.as_ref(), args.uniprot_blastdb.as_ref(), args.perc_identity)?;
+        pipeline.collect_viral_protein_mapping()
+    };
+
+    let mapping = match run_pipeline() {
+        Ok(mapping) => mapping,
+        Err(e) => {
+            if let Some(temp_dir) = temp_dir.take() {
+                let path = temp_dir.into_path();
+                println!("Intentionally not deleting temporary work directory for inspection due to a previous error: {path:?}");
+            }
+            return Err(e);
+        }
+    };
+
+    writing_new_file_or_stdout!(&args.output, output_file => {
+        mapping.write_tsv(output_file?)?;
+    });
+
+    Ok(())
 }

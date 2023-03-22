@@ -38,7 +38,9 @@ pub struct PreprocessTaxonomyArgs {
     #[clap(long, value_enum, default_value_t)]
     input_format: TaxonomyFormat,
 
-    /// Path to the input taxonomy (in the case of NCBI, specify the extracted directory of taxdump)
+    /// Path to the input taxonomy (in the case of NCBI, specify the extracted directory of taxdump).
+    /// To download the NCBI taxonomy into "ncbi-taxonomy", run `meteor fetch ncbi-taxonomy -d ncbi-taxonomy`
+    /// (see `meteor fetch --help` for more information)
     input_taxonomy: String,
 
     /// Comma-separated list of name classes to load (if INPUT_FORMAT is ncbi)

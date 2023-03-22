@@ -15,7 +15,6 @@ const BLASTOUT_FILE_NAME: &str = "spacer_search.blastout";
 
 const BLASTOUT_FMT: &str = "6 qaccver saccver";
 
-const DEFAULT_PERC_IDENTITY: i32 = 95;
 const SPACER_SUFFIX_REGEX: &str = r#"_CRISPR_\d+_spacer_\d+$"#;
 
 #[derive(Deserialize)]
@@ -120,7 +119,7 @@ impl MincedSpacersPipeline {
         &self,
         viral_seqs: &Path,
         metagenomic_seqs: &Path,
-        perc_identity: Option<i32>,
+        perc_identity: i32,
     ) -> anyhow::Result<()> {
         if self.work_dir.join(SPACERS_FILE_NAME).exists() {
             eprintln!("{SPACERS_FILE_NAME} already exists in the working directory, skipping
@@ -145,7 +144,6 @@ impl MincedSpacersPipeline {
                 search. Delete the file to re-generate it");
 
         } else {
-            let perc_identity = perc_identity.unwrap_or(DEFAULT_PERC_IDENTITY);
             let mut blastn_cmd = self.blastn_cmd(perc_identity, viral_seqs)?;
 
             eprintln!("Running {blastn_cmd:?}");

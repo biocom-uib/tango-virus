@@ -131,6 +131,7 @@ pub trait Taxonomy: Sized {
         PreOrderEdgesIter::new(self, node)
     }
 
+    // Includes node
     fn postorder_descendants(&self, node: NodeId) -> PostOrderIter<'_, Self> {
         PostOrderIter::new(self, node)
     }

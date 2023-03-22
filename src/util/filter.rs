@@ -16,7 +16,7 @@ pub enum Op {
 }
 
 impl Op {
-    pub fn apply<T: PartialOrd>(self, a: &T, b: &T) -> bool {
+    pub fn apply<T: ?Sized + PartialOrd>(self, a: &T, b: &T) -> bool {
         match self {
             Op::Eq => a == b,
             Op::Neq => a != b,

@@ -1,16 +1,16 @@
 use std::{fs::{self, File}, path::{Path, PathBuf}, io::{BufReader, Write}, sync::mpsc::{Receiver, SyncSender}, process, time::Duration};
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use clap::{Args, ArgGroup};
-use flate2::bufread::GzDecoder;
-use ftp::FtpStream;
+use flate2::read::GzDecoder;
+use tempdir::TempDir;
 
-use crate::util::{progress_monitor, cli_tools::{BlastTool, CliTool}};
+use crate::{util::{progress_monitor, cli_tools::{BlastTool, CliTool}}, fetch};
 
 use super::uniprot_xml_parser::{UniProtXmlReader, EntryBuilder, dbref_types, SubfieldsAction};
 
 /// Prepare a BLAST database using UniProt protein sequences
-#[derive(Args)]
+#[derive(Args, Clone)]
 #[clap(group(ArgGroup::new("makebastdb").multiple(false)))]
 pub struct PrepareUniProtBlastDBArgs {
     /// UniProt divisions to include. Example: viruses. See https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/taxonomic_divisions/README
@@ -25,16 +25,17 @@ pub struct PrepareUniProtBlastDBArgs {
     #[clap(long)]
     exclude_trembl: bool,
 
-    /// Always re-download existing files
+    /// Directory with UniProt files. See `meteor fetch uniprot --help`.
     #[clap(long)]
-    force_download: bool,
+    uniprot_dir: String,
 
-    /// Directory to use to download UniProt files and prepare the inputs for makeblastdb.
-    #[clap(long, short = 'd')]
-    work_dir: String,
+    /// Directory to use to prepare the inputs for makeblastdb. A temporary directory is used by
+    /// default.
+    #[clap(long)]
+    work_dir: Option<String>,
 
     /// Do not run makeblastdb, just set up input files
-    #[clap(long, group = "makeblastdb")]
+    #[clap(long, requires = "work_dir", group = "makeblastdb")]
     skip_makeblastdb: bool,
 
     /// Installation prefix of the NCBI BLAST+ toolkit to use.
@@ -46,108 +47,29 @@ pub struct PrepareUniProtBlastDBArgs {
     output: Option<String>,
 }
 
-const FTP_SERVER: &str = "ftp.uniprot.org:21";
-const REMOTE_DIVISIONS_DIRECTORY: &str = "/pub/databases/uniprot/current_release/knowledgebase/taxonomic_divisions";
-const SWISSPROT_FILE_NAME_PART: &str = "sprot";
-const TREMBL_FILE_NAME_PART: &str = "trembl";
-
-macro_rules! format_uniprot_division_file_name {
-    (db: $db:ident, division: $division:ident) => {
-        format!("uniprot_{}_{}.xml.gz", $db, $division)
-    }
-}
-
-
-fn ftp_connect() -> anyhow::Result<FtpStream> {
-    let mut conn = FtpStream::connect(FTP_SERVER)?;
-    conn.login("anonymous", "anonymous")?;
-    conn.cwd(REMOTE_DIVISIONS_DIRECTORY)?;
-    Ok(conn)
-}
-
-fn fetch(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<Vec<PathBuf>> {
-    let work_dir = Path::new(&args.work_dir);
-
-    fs::create_dir_all(work_dir)?;
-
-    let dbs = {
-        let mut dbs = Vec::new();
-
-        if !args.exclude_swissprot {
-            dbs.push(SWISSPROT_FILE_NAME_PART);
-        }
-
-        if !args.exclude_trembl {
-            dbs.push(TREMBL_FILE_NAME_PART);
-        }
-
-        dbs
-    };
-
-    let mut ftp_conn = None;
-
-    let mut paths = Vec::new();
-
-    for db in dbs {
-        for division in &args.uniprot_divisions {
-            let file_name = format_uniprot_division_file_name!(db: db, division: division);
-            let remote_path = format!("{REMOTE_DIVISIONS_DIRECTORY}/{file_name}");
-            let file_path = work_dir.join(&file_name);
-
-            if args.force_download || !file_path.exists() {
-                let conn = if let Some(conn) = &mut ftp_conn {
-                    conn
-                } else {
-                    ftp_conn.insert(ftp_connect()?)
-                };
-
-                println!("Downloading {remote_path:?} to {file_path:?}");
-
-                let file_size = conn.size(&file_name)?.ok_or(anyhow!(
-                    "File {file_name:?} does not exist in the FTP server"
-                ))?;
-
-                conn.retr(&file_name, |reader| {
-                    let io_res = File::create(&file_path).and_then(|file_writer| {
-                        progress_monitor::monitor_copy(
-                            reader,
-                            file_writer,
-                            Duration::from_secs(1),
-                            progress_monitor::default_progress_callback(file_size as u64),
-                            progress_monitor::default_finish_callback(),
-                        )
-                    });
-
-                    println!();
-
-                    Ok(io_res)
-                })??;
-            } else {
-                println!("File {file_name:?} is already present as {file_path:?}, skipping (delete it or use --force-download to re-download)");
-            }
-
-            paths.push(file_path);
+impl From<PrepareUniProtBlastDBArgs> for fetch::uniprot::UniProtFetchArgs {
+    fn from(value: PrepareUniProtBlastDBArgs) -> Self {
+        fetch::uniprot::UniProtFetchArgs {
+            download_dir: value.uniprot_dir,
+            uniprot_divisions: value.uniprot_divisions,
+            exclude_swissprot: value.exclude_swissprot,
+            exclude_trembl: value.exclude_trembl,
+            force_download: false,
         }
     }
-
-    if let Some(conn) = &mut ftp_conn {
-        conn.quit()?;
-    }
-
-    Ok(paths)
 }
 
 #[derive(Clone, Debug, Default)]
 struct UniProtEntryBuilder {
     primary_accession: Option<String>,
-    taxid: Option<i64>,
+    taxid: Option<usize>,
     sequence: Option<String>,
 }
 
 #[derive(Debug)]
 struct UniProtEntry {
     primary_accession: String,
-    taxid: i64,
+    taxid: usize,
     sequence: String,
 }
 
@@ -189,7 +111,7 @@ const TAXID_MAP_FILE_NAME: &str = "taxid.tab";
 fn read_all_entries<P: AsRef<Path>>(
     paths: &[P],
     sseq: SyncSender<(String, String)>,
-    smap: SyncSender<(String, i64)>,
+    smap: SyncSender<(String, usize)>,
 ) -> anyhow::Result<()> {
     struct UniProtEntryReader<F: FnMut(UniProtEntry) -> anyhow::Result<()>>(F);
 
@@ -200,7 +122,7 @@ fn read_all_entries<P: AsRef<Path>>(
         type Output = anyhow::Result<()>;
 
         fn read_from<R: std::io::Read>(mut self, reader: R) -> Self::Output {
-            let decoder = GzDecoder::new(BufReader::new(reader));
+            let decoder = GzDecoder::new(reader);
 
             let uniprot_reader = UniProtXmlReader::new(BufReader::new(decoder));
 
@@ -250,7 +172,7 @@ fn write_sequences(fasta_path: &Path, rseq: Receiver<(String, String)>) -> anyho
     Ok(())
 }
 
-fn write_taxid_mapping(taxid_map_path: &Path, rmap: Receiver<(String, i64)>) -> anyhow::Result<()> {
+fn write_taxid_mapping(taxid_map_path: &Path, rmap: Receiver<(String, usize)>) -> anyhow::Result<()> {
     let mut taxid_map_writer = csv::WriterBuilder::new()
         .has_headers(false)
         .delimiter(b' ')
@@ -264,18 +186,15 @@ fn write_taxid_mapping(taxid_map_path: &Path, rmap: Receiver<(String, i64)>) -> 
     Ok(())
 }
 
-fn prepare_files_for_makeblastdb(args: &PrepareUniProtBlastDBArgs) -> anyhow::Result<()> {
-    let work_dir = Path::new(&args.work_dir);
+fn prepare_files_for_makeblastdb(work_dir: &Path, uniprot_files: &[PathBuf]) -> anyhow::Result<()> {
     let fasta_path = work_dir.join(FASTA_FILE_NAME);
     let taxid_map_path = work_dir.join(TAXID_MAP_FILE_NAME);
-
-    let paths = fetch(args).context("Downloading UniProt division files")?;
 
     let (sseq, rseq) = std::sync::mpsc::sync_channel(100);
     let (smap, rmap) = std::sync::mpsc::sync_channel(1000);
 
     let (processing_errors, (fasta_errors, taxid_map_errors)) = rayon::join(
-        move || read_all_entries(&paths, sseq, smap),
+        move || read_all_entries(&uniprot_files, sseq, smap),
         move || {
             rayon::join(
                 move || write_sequences(&fasta_path, rseq),
@@ -291,15 +210,18 @@ fn prepare_files_for_makeblastdb(args: &PrepareUniProtBlastDBArgs) -> anyhow::Re
     Ok(())
 }
 
-pub fn print_sample_blastp_command(args: &PrepareUniProtBlastDBArgs, blast_prefix: Option<&Path>, db_path: &Path) -> anyhow::Result<()> {
+/*pub fn build_sample_blastp_command(
+    args: &PrepareUniProtBlastDBArgs,
+    blast_prefix: Option<&Path>,
+    db_path: &Path,
+) -> anyhow::Result<process::Command> {
     let (found, mut cmd) = if let Some(blastp_tool) = BlastTool::resolve(blast_prefix, "blastp")? {
         (true, blastp_tool.new_command())
     } else {
         (false, process::Command::new("blastp"))
     };
 
-    cmd
-        .arg("-db")
+    cmd.arg("-db")
         .arg(db_path)
         .arg("-query")
         .arg("PATH_TO_VIRAL_PROTEINS_FASTA")
@@ -308,8 +230,8 @@ pub fn print_sample_blastp_command(args: &PrepareUniProtBlastDBArgs, blast_prefi
         .arg("-out")
         .arg("PATH_TO_BLAST_OUTPUT");
 
-    Ok(())
-}
+    Ok(cmd)
+}*/
 
 pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Result<()> {
     let blast_prefix = args.blast_prefix.as_ref().map(|s| s.as_ref());
@@ -324,21 +246,31 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
         );
     };
 
-    println!("Preparing makeblastdb input files from UniProt divisions");
+    let mut temp_dir = None;
 
-    prepare_files_for_makeblastdb(&args).context("Preparing files for makeblastdb")?;
+    let work_dir = if let Some(work_dir) = &args.work_dir {
+        Path::new(work_dir)
+    } else {
+        temp_dir.insert(TempDir::new("prepare-uniprot-blastdb")?).path()
+    };
 
-    let work_dir = Path::new(&args.work_dir);
     let fasta_path = work_dir.join(FASTA_FILE_NAME);
     let taxid_map_path = work_dir.join(TAXID_MAP_FILE_NAME);
 
-    let fasta_path = fasta_path
-        .to_str()
-        .ok_or(anyhow!("FASTA path contains invalid unicode"))?;
+    if !fasta_path.exists() || !taxid_map_path.exists() {
+        println!("Preparing makeblastdb input files from UniProt divisions");
 
-    let taxid_map_path = taxid_map_path
-        .to_str()
-        .ok_or(anyhow!("TAXID mapping path contains invalid unicode"))?;
+        let uniprot_files = fetch::uniprot::list_files(&args.clone().into())
+            .context("Searching UniProt division files.")?;
+
+        prepare_files_for_makeblastdb(work_dir, &uniprot_files)
+            .context("Preparing files for makeblastdb")?;
+
+        println!("TAXID mapping file written to {taxid_map_path:?}");
+        println!("Sequences written to {fasta_path:?}");
+    } else {
+        println!("makeblastdb input files already exist, proceeding to makeblastdb");
+    }
 
     let db_path = args
         .output
@@ -350,26 +282,27 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
         fs::create_dir_all(parent)?;
     }
 
-    let output = &*db_path.to_string_lossy();
-
     makeblastdb_command
         .arg("-parse_seqids")
         .args(["-input_type", "fasta"])
         .args(["-dbtype", "prot"])
-        .args(["-in", fasta_path])
-        .args(["-taxid_map", taxid_map_path])
-        .args(["-out", output])
+        .arg("-in")
+        .arg(&fasta_path)
+        .arg("-taxid_map")
+        .arg(&taxid_map_path)
+        .arg("-out")
+        .arg(&db_path)
         .stdin(process::Stdio::null());
 
     if args.skip_makeblastdb {
-        println!("TAXID mapping file written to {taxid_map_path}");
-        println!("Sequences written to {fasta_path}");
+        println!("Recommended makeblastdb command:");
+        println!("  $ {makeblastdb_command:?}");
 
-        println!("Recommended command: {makeblastdb_command:?}");
-
+        //println!("Next, the recommended blastp command is:");
+        //println!("  $ {:?}", build_sample_blastp_command(&args, blast_prefix, &db_path)?);
 
     } else {
-        println!("Executing: {makeblastdb_command:?}");
+        println!("Running {makeblastdb_command:?}");
 
         let makeblastdb_status = makeblastdb_command
             .status()
@@ -377,14 +310,23 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
 
         if makeblastdb_status.success() {
             println!("makeblastdb finished successfully");
-        } else if let Some(code) = makeblastdb_status.code() {
-            println!("makeblastdb finished with exit code {code}");
+
+            //println!("Next, the recommended blastp command is:");
+            //println!("  $ {:?}", build_sample_blastp_command(&args, blast_prefix, &db_path)?);
+
         } else {
-            println!("makeblastdb was interrupted");
+            if let Some(code) = makeblastdb_status.code() {
+                println!("makeblastdb finished with exit code {code}");
+            } else {
+                println!("Unknown error running makeblastdb");
+            }
+
+            if let Some(temp_dir) = temp_dir.take() {
+                let path = temp_dir.into_path();
+                println!("Intentionally not deleting temporary work directory for inspection due to error: {path:?}");
+            }
         }
     }
-
-
 
     Ok(())
 }

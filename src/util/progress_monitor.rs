@@ -34,6 +34,19 @@ pub fn default_progress_callback(file_size: u64) -> impl Fn(&TransferState) {
     }
 }
 
+pub fn unknown_progress_callback() -> impl Fn(&TransferState) {
+    move |transfer_state| {
+        let transferred = transfer_state.transferred() as f64;
+
+        print!(
+            "\r  -- %  {:>8.02} MiB transferred",
+            transferred / (1024. * 1024.)
+        );
+
+        let _ = io::stdout().flush();
+    }
+}
+
 pub fn default_finish_callback() -> impl Fn(&TransferState) {
     |_| { println!(); }
 }

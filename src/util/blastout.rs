@@ -3,6 +3,7 @@ use std::path::Path;
 use std::str::{ParseBoolError, FromStr};
 use std::sync::Arc;
 
+use csv::StringRecord;
 use itertools::Itertools;
 use polars::lazy::prelude::{Expr, LazyCsvReader};
 use polars::prelude::{col, LazyFrame, LiteralValue, NullValues, Schema, DataType};
@@ -142,6 +143,44 @@ pub enum BlastOutFmt {
     },
 }
 
+impl BlastOutFmt {
+    pub fn comment_char(&self) -> Option<u8> {
+        match &self {
+            Self::Six { .. } => None,
+            Self::Seven { .. } => Some(b'#'),
+        }
+    }
+
+    pub fn delimiter(&self) -> u8 {
+        match &self {
+            Self::Six { delimiter, .. } => *delimiter,
+            Self::Seven { delimiter, .. } => *delimiter,
+        }
+    }
+
+    pub fn present_columns(&self) -> &[String] {
+        match &self {
+            Self::Six { present_columns, .. } => present_columns,
+            Self::Seven { present_columns, .. } => present_columns,
+        }
+    }
+
+    pub fn column_index(&self, column: &str) -> Option<usize> {
+        self.present_columns().iter().position(|c| c == column)
+    }
+
+    pub fn csv_reader_builder(&self) -> csv::ReaderBuilder {
+        let mut builder = csv::ReaderBuilder::new();
+
+        builder
+            .delimiter(self.delimiter())
+            .has_headers(false)
+            .comment(self.comment_char());
+
+        builder
+    }
+}
+
 impl FromStr for BlastOutFmt {
     type Err = anyhow::Error;
 
@@ -194,18 +233,69 @@ impl FromStr for BlastOutFmt {
 }
 
 #[derive(Clone)]
+pub enum Literal {
+    String(String),
+    Int64(i64),
+    UInt64(u64),
+    Float64(f64),
+}
+
+impl From<Literal> for LiteralValue {
+    fn from(value: Literal) -> Self {
+        match value {
+            Literal::String(s) => LiteralValue::Utf8(s),
+            Literal::Int64(x) => LiteralValue::Int64(x),
+            Literal::UInt64(x) => LiteralValue::UInt64(x),
+            Literal::Float64(x) => LiteralValue::Float64(x),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct BlastOutFilter {
     column: String,
-    expr: Expr,
+    op: Op,
+    value: Literal,
 }
+
+type StringRecordPredicate = Box<dyn for<'a> Fn(&'a StringRecord) -> Option<bool>>;
 
 impl BlastOutFilter {
     pub fn get_column(&self) -> &str {
         &self.column
     }
 
-    pub fn get_expr(&self) -> &Expr {
-        &self.expr
+    pub fn into_polars_expr(self) -> Expr {
+        let lhs = col(&self.column);
+
+        let rhs = Expr::Literal(self.value.into());
+
+        match self.op {
+            Op::Eq => lhs.eq(rhs),
+            Op::Neq => lhs.neq(rhs),
+            Op::Lt => lhs.lt(rhs),
+            Op::Leq => lhs.lt_eq(rhs),
+            Op::Gt => lhs.gt(rhs),
+            Op::Geq => lhs.gt_eq(rhs),
+        }
+    }
+
+    pub fn into_string_record_predicate<S: AsRef<str>>(
+        self,
+        schema: &[S],
+    ) -> Option<StringRecordPredicate> {
+        let i = schema.iter().position(|col| col.as_ref() == self.column)?;
+
+        let op = self.op;
+
+        let f: StringRecordPredicate = match self.value {
+            Literal::String(s) => Box::new(move |sr| Some(op.apply(&sr[i], &s))),
+            Literal::Int64(x) => Box::new(move |sr| Some(op.apply(&sr[i].parse().ok()?, &x))),
+            Literal::UInt64(x) => Box::new(move |sr| Some(op.apply(&sr[i].parse().ok()?, &x))),
+            Literal::Float64(x) => Box::new(move |sr| Some(op.apply(&sr[i].parse().ok()?, &x))),
+        };
+
+        Some(f)
     }
 }
 
@@ -233,48 +323,58 @@ impl FromStrFilter for BlastOutFilter {
     fn try_from_parts(key: &str, op: Op, value: &str) -> Result<Self, BlastoutFilterParseError> {
         use BlastoutFilterParseError::*;
 
-        let lhs = col(key);
-
         let dtype = fields::FIELD_TYPES
             .get(key)
             .ok_or_else(|| UnknownColumn(key.to_owned()))?;
 
-        let rhs = match dtype {
-            DataType::Boolean => LiteralValue::Boolean(value.parse()?),
-            DataType::Float32 => LiteralValue::Float32(value.parse()?),
-            DataType::Float64 => LiteralValue::Float64(value.parse()?),
-            DataType::Int32 => LiteralValue::Int32(value.parse()?),
-            DataType::Int64 => LiteralValue::Int32(value.parse()?),
-            DataType::UInt32 => LiteralValue::Int32(value.parse()?),
-            DataType::UInt64 => LiteralValue::Int32(value.parse()?),
-            DataType::Utf8 => LiteralValue::Utf8(value.to_owned()),
+        let value = match dtype {
+            DataType::Float32 => Literal::Float64(value.parse()?),
+            DataType::Float64 => Literal::Float64(value.parse()?),
+            DataType::Int32 => Literal::Int64(value.parse()?),
+            DataType::Int64 => Literal::Int64(value.parse()?),
+            DataType::UInt32 => Literal::Int64(value.parse()?),
+            DataType::UInt64 => Literal::Int64(value.parse()?),
+            DataType::Utf8 => Literal::String(value.to_owned()),
             _ => return Err(UnsupportedDataType(key.to_owned(), dtype)),
-        };
-
-        let rhs = Expr::Literal(rhs);
-
-        let expr = match op {
-            Op::Eq => lhs.eq(rhs),
-            Op::Neq => lhs.neq(rhs),
-            Op::Lt => lhs.lt(rhs),
-            Op::Leq => lhs.lt_eq(rhs),
-            Op::Gt => lhs.gt(rhs),
-            Op::Geq => lhs.gt_eq(rhs),
         };
 
         Ok(BlastOutFilter {
             column: key.to_owned(),
-            expr,
+            op,
+            value,
         })
     }
 }
 
 pub fn apply_filters(df: LazyFrame, filters: Vec<BlastOutFilter>) -> LazyFrame {
-    if let Some(filter) = filters.into_iter().map(|filter| filter.expr).reduce(Expr::and) {
+    if let Some(filter) = filters.into_iter().map(|filter| filter.into_polars_expr()).reduce(Expr::and) {
         df.filter(filter)
     } else {
         df
     }
+}
+
+pub fn global_string_record_predicate(
+    filters: Vec<BlastOutFilter>,
+    outfmt: &BlastOutFmt,
+) -> Option<impl for<'a> Fn(&'a StringRecord) -> Option<bool>> {
+    fn and(preds: Vec<StringRecordPredicate>) -> impl for<'a> Fn(&'a StringRecord) -> Option<bool> {
+        move |sr| {
+            for pred in preds.iter() {
+                if !pred(sr)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+    }
+
+    let preds = filters
+        .into_iter()
+        .map(|f| f.into_string_record_predicate(outfmt.present_columns()))
+        .collect::<Option<_>>()?;
+
+    Some(and(preds))
 }
 
 pub fn load_blastout(

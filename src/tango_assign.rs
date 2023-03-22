@@ -349,11 +349,11 @@ fn load_reads_and_produce_assignments(
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct AssignmentRecord {
-    pub query_id: String,
+pub struct AssignmentRecord<S = String> {
+    pub query_id: S,
     pub assigned_taxid: usize,
-    pub assigned_name: String,
-    pub assigned_rank: String,
+    pub assigned_name: S,
+    pub assigned_rank: S,
     pub penalty: f32,
 }
 
@@ -402,6 +402,8 @@ fn write_assignments(
                 count += 1;
                 eprint!("\rProcessed {count} query sequences");
             }
+
+            csv_writer.flush()?;
         });
     });
 

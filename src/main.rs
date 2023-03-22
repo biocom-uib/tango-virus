@@ -17,6 +17,7 @@ pub(crate) mod preprocessed_taxonomy;
 pub(crate) mod util;
 
 mod crispr_match;
+mod fetch;
 mod ppin;
 mod get_lineage;
 mod preprocess_blastout;
@@ -26,13 +27,14 @@ mod tango_assign;
 
 #[derive(Subcommand)]
 enum Commands {
+    Fetch(fetch::FetchArgs),
     PreprocessTaxonomy(preprocess_taxonomy::PreprocessTaxonomyArgs),
     PreprocessBlastout(preprocess_blastout::PreprocessBlastOutArgs),
     TangoAssign(tango_assign::TangoAssignArgs),
     RefineVpfClass(refine_vpf_class::RefineVpfClassArgs),
     CrisprMatch(crispr_match::CrisprMatchArgs),
     GetLineage(get_lineage::GetLineageArgs),
-    PrepareUniprotBlastdb(ppin::prepare_uniprot_blastdb::PrepareUniProtBlastDBArgs),
+    Ppi(ppin::PpiArgs),
 }
 
 /// METEOR: Metagenome and Metavirome Joint Analysis
@@ -46,6 +48,9 @@ fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
     match args.command {
+        Commands::Fetch(args) => {
+            fetch::fetch(args)?;
+        }
         Commands::PreprocessTaxonomy(args) => {
             preprocess_taxonomy::preprocess_taxonomy(args)?;
         }
@@ -61,8 +66,8 @@ fn main() -> anyhow::Result<()> {
         Commands::RefineVpfClass(args) => {
             refine_vpf_class::refine_vpf_class(args)?;
         }
-        Commands::PrepareUniprotBlastdb(args) => {
-            ppin::prepare_uniprot_blastdb::prepare_uniprot_blastdb(args)?;
+        Commands::Ppi(args) => {
+            ppin::ppi(args)?;
         }
         Commands::CrisprMatch(args) => {
             crispr_match::crispr_match(args)?;

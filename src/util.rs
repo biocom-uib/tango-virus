@@ -19,4 +19,23 @@ macro_rules! writing_new_file_or_stdout {
     }};
 }
 
+use flate2::read::GzDecoder;
 pub(crate) use writing_new_file_or_stdout;
+
+
+#[allow(clippy::large_enum_variant)]
+pub enum MaybeGzDecoder<R> {
+    GzDecoder(GzDecoder<R>),
+    Reader(R),
+}
+
+macro_rules! maybe_gzdecoder {
+    ($reader_expr:expr, $reader_pat:pat => $body:expr $(,)?) => {{
+        match $reader_expr {
+            crate::util::MaybeGzDecoder::GzDecoder($reader_pat) => $body,
+            crate::util::MaybeGzDecoder::Reader($reader_pat) => $body,
+        }
+    }}
+}
+
+pub(crate) use maybe_gzdecoder;
