@@ -194,7 +194,7 @@ fn prepare_files_for_makeblastdb(work_dir: &Path, uniprot_files: &[PathBuf]) -> 
     let (smap, rmap) = std::sync::mpsc::sync_channel(1000);
 
     let (processing_errors, (fasta_errors, taxid_map_errors)) = rayon::join(
-        move || read_all_entries(&uniprot_files, sseq, smap),
+        move || read_all_entries(uniprot_files, sseq, smap),
         move || {
             rayon::join(
                 move || write_sequences(&fasta_path, rseq),
