@@ -111,7 +111,7 @@ pub fn fetch(args: &StringVirusesFetchArgs) -> anyhow::Result<()> {
         if args.force_download || !local_path.exists() {
             let url = format!("{STRING_VIRUSES_BASE_URL}/{file_name}");
 
-            println!("Downloading {url:?} to {local_path:?}");
+            eprintln!("Downloading {url:?} to {local_path:?}");
 
             let response = client.get(&url).send()?.error_for_status()?;
 
@@ -135,7 +135,7 @@ pub fn fetch(args: &StringVirusesFetchArgs) -> anyhow::Result<()> {
                 )
             };
 
-            println!();
+            eprintln!();
 
             if r.is_err() {
                 fs::remove_file(&local_partial_path)?;

@@ -249,7 +249,7 @@ pub fn match_viral_proteins(args: MatchViralProteinsArgs) -> anyhow::Result<()> 
         Err(e) => {
             if let Some(temp_dir) = temp_dir.take() {
                 let path = temp_dir.into_path();
-                println!("Intentionally not deleting temporary work directory for inspection due to a previous error: {path:?}");
+                eprintln!("Intentionally not deleting temporary work directory for inspection due to a previous error: {path:?}");
             }
             return Err(e);
         }

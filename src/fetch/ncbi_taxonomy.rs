@@ -53,7 +53,7 @@ pub fn fetch(args: &NcbiTaxonomyFetchArgs) -> anyhow::Result<()> {
             ftp_conn.insert(ftp_connect()?)
         };
 
-        println!("Downloading {remote_path:?} to {local_path:?}");
+        eprintln!("Downloading {remote_path:?} to {local_path:?}");
 
         let file_size = conn.size(file_name)?.ok_or(anyhow!(
             "File {file_name:?} does not exist in the FTP server"
@@ -70,7 +70,7 @@ pub fn fetch(args: &NcbiTaxonomyFetchArgs) -> anyhow::Result<()> {
                 )
             });
 
-            println!();
+            eprintln!();
 
             Ok(io_res)
         });

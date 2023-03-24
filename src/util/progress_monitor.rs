@@ -25,7 +25,7 @@ pub fn default_progress_callback(file_size: u64) -> impl Fn(&TransferState) {
         let total = file_size as f64;
         let progress = transferred / total;
 
-        print!(
+        eprint!(
             "\r  {:>6.02}%  {:>8.02}/{:.02} MiB",
             progress*100., transferred / (1024. * 1024.), total / (1024. * 1024.)
         );
@@ -48,7 +48,7 @@ pub fn unknown_progress_callback() -> impl Fn(&TransferState) {
 }
 
 pub fn default_finish_callback() -> impl Fn(&TransferState) {
-    |_| { println!(); }
+    |_| { eprintln!(); }
 }
 
 pub trait ReaderConsumer {

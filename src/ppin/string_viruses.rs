@@ -200,7 +200,190 @@ pub struct StringVirusesInteractionsArgs {
     output: String,
 }
 
-fn collect_assignment_taxids<Names: NamesAssoc + 'static>(
+
+struct VirusAliasHitInfo<'a> {
+    accession: &'a str,
+    hit_virus_name: &'a str,
+}
+
+enum NodeKind<'a, F>
+where
+    F: FnOnce() -> Option<VirusAliasHitInfo<'a>>
+{
+    Host(&'a str),
+    MaybeVirus(F),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EdgeKind {
+    VirusVirus,
+    VirusHost,
+    HostVirus,
+    HostHost,
+}
+
+#[derive(Serialize)]
+pub struct PredictedInteraction<S = String> {
+    pub protein_accession_a: S,
+    pub protein_accession_b: S,
+    pub virus_name: Option<S>,
+    pub virus_taxid: Option<usize>,
+    pub host_taxid: Option<usize>,
+    pub edge_kind: EdgeKind,
+}
+
+struct PredictionContext {
+    assigned_taxids: HashSet<NodeId>,
+    uniprot_virus_mapping: ProteinVirusTaxidMapping,
+    string_uniprot_mapping: StringProteinAliases<ProteinAlias>,
+    preferred_source_sym: DefaultSymbol,
+}
+
+impl PredictionContext {
+    fn inspect_node_from_string_id<'b, 'a: 'b>(
+        &'a self,
+        string_id: &'b str,
+    ) -> Option<(
+        NodeId,
+        NodeKind<'a, impl FnOnce() -> Option<VirusAliasHitInfo<'a>> + 'b>,
+    )> {
+        let Some((taxid, _)) = fetch::string_viruses::parse_string_id(string_id) else {
+            eprintln!("Warning: Could not parse StringDB identifier: {string_id}");
+            return None;
+        };
+
+        let mut aliases = self.string_uniprot_mapping.find_aliases(string_id);
+
+        let result = if self.assigned_taxids.contains(&NodeId(taxid)) {
+            NodeKind::Host(
+                self.string_uniprot_mapping.resolve_alias_name(
+                    aliases
+                        .find(|alias| alias.source == self.preferred_source_sym)?
+                        .alias,
+                )?,
+            )
+        } else {
+            NodeKind::MaybeVirus(move || {
+                let mut candidate = None;
+
+                for alias in aliases {
+                    let Some(accession) = self.string_uniprot_mapping.resolve_alias_name(alias.alias) else {
+                        continue;
+                    };
+
+                    let is_preferred_source = alias.source == self.preferred_source_sym;
+
+                    for (hit_virus_name, hit_taxid) in
+                        self.uniprot_virus_mapping.0.lookup(accession)
+                    {
+                        if hit_taxid != taxid {
+                            eprintln!("Warning: Virus TaxID mismatch between StringDB and UniProt BLAST search: {string_id}");
+                            continue;
+                        }
+
+                        if is_preferred_source {
+                            candidate = Some(VirusAliasHitInfo {
+                                accession,
+                                hit_virus_name,
+                            });
+                            break;
+                        } else if candidate.is_none() {
+                            candidate = Some(VirusAliasHitInfo {
+                                accession,
+                                hit_virus_name,
+                            });
+                        }
+                    }
+                }
+
+                candidate
+            })
+        };
+
+        Some((NodeId(taxid), result))
+    }
+
+    fn process_protein_links_record<'a>(
+        &'a self,
+        record: ProteinLinksRecord<&str>,
+    ) -> Option<PredictedInteraction<&'a str>> {
+        let (taxid_a, node_kind_a) = self.inspect_node_from_string_id(record.protein_id_a)?;
+        let (taxid_b, node_kind_b) = self.inspect_node_from_string_id(record.protein_id_b)?;
+
+        use EdgeKind::*;
+        use NodeKind::*;
+
+        match (node_kind_a, node_kind_b) {
+            (Host(acc_a), Host(acc_b)) => {
+                if taxid_a != taxid_b {
+                    eprintln!(
+                        "Warning: Host-host interaction TaxID mismatch: {} - {}",
+                        record.protein_id_a, record.protein_id_b
+                    );
+                    None
+                } else {
+                    Some(PredictedInteraction {
+                        protein_accession_a: acc_a,
+                        protein_accession_b: acc_b,
+                        virus_name: None,
+                        virus_taxid: None,
+                        host_taxid: Some(taxid_a.0),
+                        edge_kind: HostHost,
+                    })
+                }
+            }
+            (Host(acc_a), MaybeVirus(best_hit_b)) => {
+                let best_hit_b = best_hit_b()?;
+
+                Some(PredictedInteraction {
+                    protein_accession_a: acc_a,
+                    protein_accession_b: best_hit_b.accession,
+                    virus_name: Some(best_hit_b.hit_virus_name),
+                    virus_taxid: Some(taxid_b.0),
+                    host_taxid: Some(taxid_a.0),
+                    edge_kind: HostVirus,
+                })
+            }
+            (MaybeVirus(best_hit_a), Host(acc_b)) => {
+                let best_hit_a = best_hit_a()?;
+
+                Some(PredictedInteraction {
+                    protein_accession_a: best_hit_a.accession,
+                    protein_accession_b: acc_b,
+                    virus_name: Some(best_hit_a.hit_virus_name),
+                    virus_taxid: Some(taxid_a.0),
+                    host_taxid: Some(taxid_b.0),
+                    edge_kind: VirusHost,
+                })
+            }
+            (MaybeVirus(best_hit_a), MaybeVirus(best_hit_b)) => {
+                let best_hit_a = best_hit_a()?;
+                let best_hit_b = best_hit_b()?;
+
+                if taxid_a != taxid_b {
+                    eprintln!(
+                        "Warning: Virus-virus interaction TaxID mismatch: {} - {}",
+                        record.protein_id_a, record.protein_id_b
+                    );
+                    None
+                } else {
+                    Some(PredictedInteraction {
+                        protein_accession_a: best_hit_a.accession,
+                        protein_accession_b: best_hit_b.accession,
+                        virus_name: Some(best_hit_a.hit_virus_name),
+                        virus_taxid: Some(taxid_a.0),
+                        host_taxid: None,
+                        edge_kind: VirusVirus,
+                    })
+                }
+            }
+        }
+    }
+}
+
+
+fn read_assignment_taxids<Names: NamesAssoc + 'static>(
     assignment: &Path,
     taxonomy: &NcbiTaxonomy<Names>,
     include_descendants: bool,
@@ -243,232 +426,93 @@ fn read_uniprot_virus_mapping(path: &Path) -> anyhow::Result<ProteinVirusTaxidMa
     ProteinVirusTaxidMapping::read_tsv(file)
 }
 
-struct VirusAliasHitInfo<'a> {
-    accession: &'a str,
-    hit_virus_name: &'a str,
-}
+pub fn string_viruses_interactions(args: StringVirusesInteractionsArgs) -> anyhow::Result<()> {
+    let stringdb_dir = args.stringdb_dir.as_ref();
 
-enum NodeKind<'a, F>
-where
-    F: FnOnce() -> Option<VirusAliasHitInfo<'a>>
-{
-    Host(&'a str),
-    MaybeVirus(F),
-}
+    let context = {
+        let uniprot_virus_mapping = read_uniprot_virus_mapping(args.uniprot_virus_mapping.as_ref())
+            .context(format!(
+                "Reading the UniProt - Viral contig name mapping from {}",
+                &args.uniprot_virus_mapping
+            ))?;
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EdgeKind {
-    VirusVirus,
-    VirusHost,
-    HostVirus,
-    HostHost,
-}
+        let assigned_taxids = with_some_ncbi_or_newick_taxonomy!(args.taxonomy.deserialize()?.tree,
+            ncbi: taxonomy => {
+                read_assignment_taxids(
+                    args.metagenomic_assignment.as_ref(),
+                    &taxonomy,
+                    args.include_descendants
+                )
+                .context(format!("Reading metagenomic assigment at {}", &args.metagenomic_assignment))?
+            },
+            newick: _ => {
+                anyhow::bail!("Newick taxonomies are not supported in this utility");
+            },
+        );
 
-#[derive(Serialize)]
-pub struct PredictedInteraction<S = String> {
-    pub protein_accession_a: S,
-    pub protein_accession_b: S,
-    pub virus_name: Option<S>,
-    pub virus_taxid: Option<usize>,
-    pub host_taxid: Option<usize>,
-    pub edge_kind: EdgeKind,
-}
+        let string_uniprot_mapping = read_string_uniprot_mapping(stringdb_dir).context(format!(
+            "Reading the StringDB - UniProt mapping in {}",
+            &args.stringdb_dir
+        ))?;
 
-fn inspect_node_from_string_id<'b, 'a: 'b>(
-    assigned_taxids: &HashSet<NodeId>,
-    uniprot_virus_mapping: &'a ProteinVirusTaxidMapping,
-    string_uniprot_mapping: &'a StringProteinAliases<ProteinAlias>,
-    preferred_source_sym: DefaultSymbol,
-    string_id: &'b str,
-) -> Option<(NodeId, NodeKind<'a, impl FnOnce() -> Option<VirusAliasHitInfo<'a>> + 'b>)> {
-    let Some((taxid, _)) = fetch::string_viruses::parse_string_id(string_id) else {
-        eprintln!("Warning: Could not parse StringDB identifier: {string_id}");
-        return None;
+        let preferred_source_sym = string_uniprot_mapping
+            .get_source_sym("UniProtKB-EI")
+            .expect("Could not find StringDB alias source: UniProtKB-EI");
+
+        PredictionContext {
+            assigned_taxids,
+            uniprot_virus_mapping,
+            string_uniprot_mapping,
+            preferred_source_sym,
+        }
     };
 
-    let mut aliases = string_uniprot_mapping.find_aliases(string_id);
+    let context = &context;
 
-    let result = if assigned_taxids.contains(&NodeId(taxid)) {
-        NodeKind::Host(
-            string_uniprot_mapping.resolve_alias_name(
-                aliases
-                .find(|alias| alias.source == preferred_source_sym)?.alias
-            )?
-        )
-    } else {
-        NodeKind::MaybeVirus(move || {
-            let mut candidate = None;
+    let (sender, receiver) = std::sync::mpsc::channel(); // unbounded
 
-            for alias in aliases {
-                let Some(accession) = string_uniprot_mapping.resolve_alias_name(alias.alias) else {
-                    continue;
-                };
+    let (r1, r2) = rayon::join(
+        move || {
+            use fetch::string_viruses::FileName::ProteinLinks;
 
-                let is_preferred_source = alias.source == preferred_source_sym;
+            maybe_gzdecoder!(ProteinLinks.open_read(stringdb_dir)?, protein_links_reader => {
+                let mut records = csv::ReaderBuilder::new()
+                    .has_headers(false)
+                    .delimiter(b'\t')
+                    .from_reader(protein_links_reader)
+                    .into_lending_iter()
+                    .into_deserialize::<HKT!(fetch::string_viruses::ProteinLinksRecord<&str>)>(None);
 
-                for (hit_virus_name, hit_taxid) in uniprot_virus_mapping.0.lookup(accession) {
-                    if hit_taxid != taxid {
-                        eprintln!("Warning: Virus TaxID mismatch between StringDB and UniProt BLAST search: {string_id}");
-                        continue;
-                    }
-
-                    if is_preferred_source {
-                        candidate = Some(VirusAliasHitInfo { accession, hit_virus_name });
-                        break;
-                    } else if candidate.is_none() {
-                        candidate = Some(VirusAliasHitInfo { accession, hit_virus_name });
+                while let Some(record) = records.next() {
+                    if let Some(interaction) = context.process_protein_links_record(record?) {
+                        if sender.send(interaction).is_err() {
+                            eprintln!("Could not send interaction -- channel closed?");
+                            return anyhow::Ok(());
+                        };
                     }
                 }
-            }
+            });
 
-            candidate
-        })
-    };
-
-    Some((NodeId(taxid), result))
-}
-
-fn process_protein_links_record<'a>(
-    assigned_taxids: &HashSet<NodeId>,
-    uniprot_virus_mapping: &'a ProteinVirusTaxidMapping,
-    string_uniprot_mapping: &'a StringProteinAliases<ProteinAlias>,
-    preferred_source_sym: DefaultSymbol,
-    record: ProteinLinksRecord<&str>,
-) -> Option<PredictedInteraction<&'a str>> {
-    let (taxid_a, node_kind_a) = inspect_node_from_string_id(
-        assigned_taxids,
-        uniprot_virus_mapping,
-        string_uniprot_mapping,
-        preferred_source_sym,
-        record.protein_id_a,
-    )?;
-
-    let (taxid_b, node_kind_b) = inspect_node_from_string_id(
-        assigned_taxids,
-        uniprot_virus_mapping,
-        string_uniprot_mapping,
-        preferred_source_sym,
-        record.protein_id_b,
-    )?;
-
-    use NodeKind::*;
-    use EdgeKind::*;
-
-    match (node_kind_a, node_kind_b) {
-        (Host(acc_a), Host(acc_b)) => {
-            if taxid_a != taxid_b {
-                eprintln!("Warning: Host-host interaction TaxID mismatch: {} - {}", record.protein_id_a, record.protein_id_b);
-                None
-            } else {
-                Some(PredictedInteraction {
-                    protein_accession_a: acc_a,
-                    protein_accession_b: acc_b,
-                    virus_name: None,
-                    virus_taxid: None,
-                    host_taxid: Some(taxid_a.0),
-                    edge_kind: HostHost,
-                })
-            }
-        }
-        (Host(acc_a), MaybeVirus(best_hit_b)) => {
-            let best_hit_b = best_hit_b()?;
-
-            Some(PredictedInteraction {
-                protein_accession_a: acc_a,
-                protein_accession_b: best_hit_b.accession,
-                virus_name: Some(best_hit_b.hit_virus_name),
-                virus_taxid: Some(taxid_b.0),
-                host_taxid: Some(taxid_a.0),
-                edge_kind: HostVirus,
-            })
-        }
-        (MaybeVirus(best_hit_a), Host(acc_b)) => {
-            let best_hit_a = best_hit_a()?;
-
-            Some(PredictedInteraction {
-                protein_accession_a: best_hit_a.accession,
-                protein_accession_b: acc_b,
-                virus_name: Some(best_hit_a.hit_virus_name),
-                virus_taxid: Some(taxid_a.0),
-                host_taxid: Some(taxid_b.0),
-                edge_kind: VirusHost,
-            })
-        }
-        (MaybeVirus(best_hit_a), MaybeVirus(best_hit_b)) => {
-            let best_hit_a = best_hit_a()?;
-            let best_hit_b = best_hit_b()?;
-
-            if taxid_a != taxid_b {
-                eprintln!("Warning: Virus-virus interaction TaxID mismatch: {} - {}", record.protein_id_a, record.protein_id_b);
-                None
-            } else {
-                Some(PredictedInteraction {
-                    protein_accession_a: best_hit_a.accession,
-                    protein_accession_b: best_hit_b.accession,
-                    virus_name: Some(best_hit_a.hit_virus_name),
-                    virus_taxid: Some(taxid_a.0),
-                    host_taxid: None,
-                    edge_kind: VirusVirus,
-                })
-            }
-        }
-    }
-}
-
-pub fn string_viruses_interactions(args: StringVirusesInteractionsArgs) -> anyhow::Result<()> {
-    let uniprot_virus_mapping = read_uniprot_virus_mapping(args.uniprot_virus_mapping.as_ref())
-        .context(format!("Reading the UniProt - Viral contig name mapping from {}", &args.uniprot_virus_mapping))?;
-
-    let assigned_taxids = with_some_ncbi_or_newick_taxonomy!(args.taxonomy.deserialize()?.tree,
-        ncbi: taxonomy => {
-            collect_assignment_taxids(
-                args.metagenomic_assignment.as_ref(),
-                &taxonomy,
-                args.include_descendants
-            )
-            .context(format!("Reading metagenomic assigment at {}", &args.metagenomic_assignment))?
+            anyhow::Ok(())
         },
-        newick: _ => {
-            anyhow::bail!("Newick taxonomies are not supported in this utility");
+        move || {
+            writing_new_file_or_stdout!(&args.output, writer => {
+                let mut csv_writer = csv::WriterBuilder::new()
+                    .delimiter(b'\t')
+                    .has_headers(true)
+                    .from_writer(writer?);
+
+                for interaction in receiver {
+                    csv_writer.serialize(interaction)?;
+                }
+            });
+
+            anyhow::Ok(())
         },
     );
 
-    let stringdb_dir = args.stringdb_dir.as_ref();
-
-    let string_uniprot_mapping = read_string_uniprot_mapping(stringdb_dir)
-        .context(format!("Reading the StringDB - UniProt mapping in {}", &args.stringdb_dir))?;
-
-    let preferred_source_sym = string_uniprot_mapping.get_source_sym("UniProtKB-EI")
-        .expect("Could not find StringDB alias source: UniProtKB-EI");
-
-    maybe_gzdecoder!(fetch::string_viruses::FileName::ProteinLinks.open_read(stringdb_dir)?, protein_links_reader => {
-        writing_new_file_or_stdout!(&args.output, writer => {
-            let mut csv_writer = csv::WriterBuilder::new()
-                .delimiter(b'\t')
-                .has_headers(true)
-                .from_writer(writer?);
-
-            let mut records = csv::ReaderBuilder::new()
-                .has_headers(false)
-                .delimiter(b'\t')
-                .from_reader(protein_links_reader)
-                .into_lending_iter()
-                .into_deserialize::<HKT!(fetch::string_viruses::ProteinLinksRecord<&str>)>(None);
-
-            while let Some(record) = records.next() {
-                let record = record?;
-
-                let interaction = process_protein_links_record(&assigned_taxids, &uniprot_virus_mapping, &string_uniprot_mapping, preferred_source_sym, record);
-
-                if let Some(interaction) = interaction {
-                    csv_writer.serialize(interaction)?;
-                }
-            }
-
-            csv_writer.flush()?;
-        });
-    });
+    r2?;
+    r1?;
 
     Ok(())
 }

@@ -13,7 +13,8 @@ use super::uniprot_xml_parser::{UniProtXmlReader, EntryBuilder, dbref_types, Sub
 #[derive(Args, Clone)]
 #[clap(group(ArgGroup::new("makebastdb").multiple(false)))]
 pub struct PrepareUniProtBlastDBArgs {
-    /// UniProt divisions to include. Example: viruses. See https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/taxonomic_divisions/README
+    /// UniProt divisions to include. Example: viruses.
+    /// See https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/taxonomic_divisions/README
     #[clap(num_args = 1..)]
     uniprot_divisions: Vec<String>,
 
@@ -138,7 +139,7 @@ fn read_all_entries<P: AsRef<Path>>(
         let path = path.as_ref();
 
         let path_str = path.to_string_lossy();
-        println!("Loading {}", &path_str);
+        eprintln!("Loading {}", &path_str);
 
         let file_size = fs::metadata(path)
             .context(format!("Querying the size of {path_str}"))?
@@ -258,7 +259,7 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
     let taxid_map_path = work_dir.join(TAXID_MAP_FILE_NAME);
 
     if !fasta_path.exists() || !taxid_map_path.exists() {
-        println!("Preparing makeblastdb input files from UniProt divisions");
+        eprintln!("Preparing makeblastdb input files from UniProt divisions");
 
         let uniprot_files = fetch::uniprot::list_files(&args.clone().into())
             .context("Searching UniProt division files.")?;
@@ -266,10 +267,10 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
         prepare_files_for_makeblastdb(work_dir, &uniprot_files)
             .context("Preparing files for makeblastdb")?;
 
-        println!("TAXID mapping file written to {taxid_map_path:?}");
-        println!("Sequences written to {fasta_path:?}");
+        eprintln!("TAXID mapping file written to {taxid_map_path:?}");
+        eprintln!("Sequences written to {fasta_path:?}");
     } else {
-        println!("makeblastdb input files already exist, proceeding to makeblastdb");
+        eprintln!("makeblastdb input files already exist, proceeding to makeblastdb");
     }
 
     let db_path = args
@@ -295,35 +296,35 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
         .stdin(process::Stdio::null());
 
     if args.skip_makeblastdb {
-        println!("Recommended makeblastdb command:");
-        println!("  $ {makeblastdb_command:?}");
+        eprintln!("Recommended makeblastdb command:");
+        eprintln!("  $ {makeblastdb_command:?}");
 
-        //println!("Next, the recommended blastp command is:");
-        //println!("  $ {:?}", build_sample_blastp_command(&args, blast_prefix, &db_path)?);
+        //eprintln!("Next, the recommended blastp command is:");
+        //eprintln!("  $ {:?}", build_sample_blastp_command(&args, blast_prefix, &db_path)?);
 
     } else {
-        println!("Running {makeblastdb_command:?}");
+        eprintln!("Running {makeblastdb_command:?}");
 
         let makeblastdb_status = makeblastdb_command
             .status()
             .context("Executing makeblastdb")?;
 
         if makeblastdb_status.success() {
-            println!("makeblastdb finished successfully");
+            eprintln!("makeblastdb finished successfully");
 
-            //println!("Next, the recommended blastp command is:");
-            //println!("  $ {:?}", build_sample_blastp_command(&args, blast_prefix, &db_path)?);
+            //eprintln!("Next, the recommended blastp command is:");
+            //eprintln!("  $ {:?}", build_sample_blastp_command(&args, blast_prefix, &db_path)?);
 
         } else {
             if let Some(code) = makeblastdb_status.code() {
-                println!("makeblastdb finished with exit code {code}");
+                eprintln!("makeblastdb finished with exit code {code}");
             } else {
-                println!("Unknown error running makeblastdb");
+                eprintln!("Unknown error running makeblastdb");
             }
 
             if let Some(temp_dir) = temp_dir.take() {
                 let path = temp_dir.into_path();
-                println!("Intentionally not deleting temporary work directory for inspection due to error: {path:?}");
+                eprintln!("Intentionally not deleting temporary work directory for inspection due to error: {path:?}");
             }
         }
     }

@@ -89,7 +89,7 @@ pub fn fetch(args: &UniProtFetchArgs) -> anyhow::Result<Vec<PathBuf>> {
                     ftp_conn.insert(ftp_connect()?)
                 };
 
-                println!("Downloading {remote_path:?} to {local_path:?}");
+                eprintln!("Downloading {remote_path:?} to {local_path:?}");
 
                 let file_size = conn.size(&file_name)?.ok_or(anyhow!(
                     "File {file_name:?} does not exist in the FTP server"
@@ -106,7 +106,7 @@ pub fn fetch(args: &UniProtFetchArgs) -> anyhow::Result<Vec<PathBuf>> {
                         )
                     });
 
-                    println!();
+                    eprintln!();
 
                     Ok(io_res)
                 });

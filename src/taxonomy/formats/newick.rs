@@ -340,7 +340,7 @@ mod tests {
 
         let t = NewickTaxonomy::from_simple_tree(simple_t, ranks);
 
-        println!("{t:?}");
+        eprintln!("{t:?}");
 
         assert_eq!(
             t.postorder_descendants(t.get_root())
