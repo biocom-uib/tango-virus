@@ -40,7 +40,7 @@ impl ProteinVirusTaxidMapping {
                     virus_name,
                     virus_taxid,
                 })
-        },
+            },
         )
     }
 }

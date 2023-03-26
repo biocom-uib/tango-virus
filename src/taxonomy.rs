@@ -159,6 +159,72 @@ pub trait LabelledTaxonomy: Taxonomy {
     }
 }
 
+impl<'t, Tax: Taxonomy> Taxonomy for &'t Tax {
+    fn get_root(&self) -> NodeId {
+        (*self).get_root()
+    }
+
+    fn fixup_node(&self, node: usize) -> Option<NodeId> {
+        (*self).fixup_node(node)
+    }
+
+    fn find_parent(&self, node: NodeId) -> Option<NodeId> {
+        (*self).find_parent(node)
+    }
+
+    fn has_uniform_depths(&self) -> Option<usize> {
+        (*self).has_uniform_depths()
+    }
+
+    type Children<'a> = Tax::Children<'a>
+    where
+        't: 'a;
+
+    fn iter_children(&self, node: NodeId) -> Self::Children<'_> {
+        (*self).iter_children(node)
+    }
+
+    type RankSym = Tax::RankSym;
+
+    fn rank_sym_str(&self, rank_sym: Self::RankSym) -> Option<&str> {
+        (*self).rank_sym_str(rank_sym)
+    }
+
+    fn lookup_rank_sym(&self, rank: &str) -> Option<Self::RankSym> {
+        (*self).lookup_rank_sym(rank)
+    }
+
+    fn find_rank(&self, node: NodeId) -> Option<Self::RankSym> {
+        (*self).find_rank(node)
+    }
+
+    type NodeRanks<'a> = Tax::NodeRanks<'a>
+    where
+        't: 'a;
+
+    fn node_ranks(&self) -> Self::NodeRanks<'_> {
+        (*self).node_ranks()
+    }
+}
+
+impl<'t, Tax: LabelledTaxonomy> LabelledTaxonomy for &'t Tax {
+    type Labels<'a> = Tax::Labels<'a>
+    where
+        't: 'a;
+
+    fn labels_of(&self, node: NodeId) -> Self::Labels<'_> {
+        (*self).labels_of(node)
+    }
+
+    type NodesWithLabel<'a> = Tax::NodesWithLabel<'a>
+    where
+        't: 'a;
+
+    fn nodes_with_label<'a>(&'a self, label: &'a str) -> Self::NodesWithLabel<'a> {
+        (*self).nodes_with_label(label)
+    }
+}
+
 pub struct MissingRanks<R>(pub Vec<R>);
 
 pub trait TopologyReplacer<Tax> {

@@ -15,12 +15,33 @@ const DEFAULT_PERC_IDENTITY: i32 = 95;
 pub struct VirusHostMapping(pub InternedMultiMapping);
 
 impl VirusHostMapping {
-    pub fn read_tsv<R: io::Read>(&self, reader: R) -> anyhow::Result<Self> {
+    pub fn read_tsv<R: io::Read>(reader: R) -> anyhow::Result<Self> {
         Ok(Self(InternedMultiMapping::read_tsv(reader, true)?))
     }
 
     pub fn write_tsv<W: io::Write>(&self, writer: W) -> csv::Result<()> {
         self.0.write_tsv(writer, &["virus_name", "host_name"])
+    }
+}
+
+#[derive(Default)]
+pub struct HostVirusMapping(pub InternedMultiMapping);
+
+impl HostVirusMapping {
+    pub fn read_tsv<R: io::Read>(reader: R) -> anyhow::Result<Self> {
+        let mapping = InternedMultiMapping::<_>::read_tsv_with(reader, true, |record| {
+            Ok((&record[1], &record[0]))
+        })?;
+
+        Ok(Self(mapping))
+    }
+
+    pub fn write_tsv<W: io::Write>(&self, writer: W) -> csv::Result<()> {
+        self.0.write_tsv_with(
+            writer,
+            &["virus_name", "host_name"],
+            |csv_writer, host_name, virus_name| csv_writer.write_record([virus_name, host_name]),
+        )
     }
 }
 

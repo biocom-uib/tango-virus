@@ -1,23 +1,24 @@
 use std::{
     collections::{HashMap, HashSet},
     io, iter,
-    num::ParseFloatError,
-    path::Path
+    path::Path, fs::File
 };
 
 use anyhow::{Context, Result};
-use clap::{Args, ValueEnum};
-use itertools::Itertools;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use clap::Args;
+use lending_iterator::prelude::*;
 
 use crate::{
     preprocessed_taxonomy::{with_some_taxonomy, PreprocessedTaxonomyArgs},
     tango_assign::AssignmentRecord,
     taxonomy::{LabelledTaxonomy, NodeId, Taxonomy},
-    util::filter::{self, FromStrFilter},
-    util::writing_new_file_or_stdout,
+    util::{writing_new_file_or_stdout, csv_stream::CsvReaderIterExt, vpf_class_record::{VpfClassRecordFilter, VpfClassRecord, VpfClassRecordHKT, self}, filter::FromStrFilter}, crispr_match::VirusHostMapping, refine_vpf_class::enrichment::{CrisprEnrichment, NoEnrichment, NoEnrichmentContext},
 };
+
+use self::{enrichment::{Enrichment, EnrichedVpfClassRecord, CsvEnrichedVpfClassRecord}, summary::{EnrichmentSummary, SummarySortBy}};
+
+pub(crate) mod enrichment;
+pub(crate) mod summary;
 
 /// Refine a VPF-Class host prediction to include only ascendants from taxonomic nodes found in a
 /// metagenomic assignment.
@@ -29,11 +30,16 @@ pub struct RefineVpfClassArgs {
     /// TANGO3 metagenomic assignment output
     metagenomic_assignment: String,
 
+    /// Use CRISPR match data from this file (see `meteor crispr-match`) to restrict the refinement.
+    #[clap(short, long)]
+    crispr_matches: Option<String>,
+
     /// VPF-Class output file (presumably host_[rank].tsv)
     vpf_class_prediction: String,
 
-    /// Does the presence of a higher-ranked node in the metagenomic assignment imply the presence
-    /// of any of its descendants?
+    /// Does the presence of a higher-ranked node in the metagenomic assignment allow predictions
+    /// about any of its descendants by itself? If given, all of its RANK descendants are assumed
+    /// to be present in the sample.
     #[clap(long)]
     include_descendants: bool,
 
@@ -58,7 +64,7 @@ pub struct RefineVpfClassArgs {
     #[clap(long, value_name = "SUMMARY_FILE")]
     write_summary: Option<String>,
 
-    /// Column to sort --write-summary by
+    ///// Column to sort --write-summary by
     #[clap(long, value_enum, default_value_t = SummarySortBy::VirusCount)]
     summary_sort_by: SummarySortBy,
 }
@@ -80,7 +86,9 @@ impl RefineVpfClassArgs {
 
 #[derive(Default)]
 struct RankAssignments {
+    // node at rank -> related nodes in assignment (depending on --include-descendants)
     rank_assignments: HashMap<NodeId, HashSet<NodeId>>,
+    // node at rank -> related contigs (depending on --include-descendants)
     rank_contigs: HashMap<NodeId, HashSet<String>>,
     dropped_records: usize,
     total_records: usize,
@@ -192,263 +200,134 @@ fn load_rank_assignments<Tax: Taxonomy>(
     Ok(assignments)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct VpfClassRecord {
-    pub virus_name: String,
-    pub class_name: String,
-    pub membership_ratio: f64,
-    pub virus_hit_score: f64,
-    pub confidence_score: f64,
+pub struct CrisprMatchData {
+    crispr_matches: VirusHostMapping,
 }
 
-enum VpfClassRecordFieldValue {
-    VirusName(String),
-    ClassName(String),
-    MembershipRatio(f64),
-    VirusHitScore(f64),
-    ConfidenceScore(f64),
+fn load_crispr_match_data(crispr_match_path: &Path) -> Result<CrisprMatchData> {
+    let file = File::open(crispr_match_path)?;
+    let crispr_matches = VirusHostMapping::read_tsv(file)?;
+
+    Ok(CrisprMatchData { crispr_matches, })
 }
 
-struct VpfClassRecordFilter {
-    field_value: VpfClassRecordFieldValue,
-    op: filter::Op,
-}
-
-impl VpfClassRecordFilter {
-    fn apply(&self, record: &VpfClassRecord) -> bool {
-        use VpfClassRecordFieldValue::*;
-
-        match &self.field_value {
-            VirusName(value) => self.op.apply(&record.virus_name, value),
-            ClassName(value) => self.op.apply(&record.class_name, value),
-            MembershipRatio(value) => self.op.apply(&record.membership_ratio, value),
-            VirusHitScore(value) => self.op.apply(&record.virus_hit_score, value),
-            ConfidenceScore(value) => self.op.apply(&record.confidence_score, value),
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-enum VpfClassRecordFilterParseError {
-    #[error("Error parsing floating point number")]
-    FloatParseError(#[from] ParseFloatError),
-
-    #[error("Unknown field {:?}, Valid names are virus_name, class_name, membership_ratio, virus_hit_score and confidence_score", .0)]
-    UnknownField(String),
-}
-
-impl FromStrFilter for VpfClassRecordFilter {
-    type Err = VpfClassRecordFilterParseError;
-
-    fn try_from_parts(key: &str, op: filter::Op, value: &str) -> Result<Self, Self::Err> {
-        use VpfClassRecordFieldValue::*;
-        use VpfClassRecordFilterParseError::*;
-
-        let field_value = match key {
-            "virus_name" => VirusName(value.to_owned()),
-            "class_name" => ClassName(value.to_owned()),
-            "membership_ratio" => MembershipRatio(value.parse()?),
-            "virus_hit_score" => VirusHitScore(value.parse()?),
-            "confidence_score" => ConfidenceScore(value.parse()?),
-            _ => return Err(UnknownField(key.to_owned())),
-        };
-
-        Ok(VpfClassRecordFilter { field_value, op })
-    }
-}
-
-struct EnrichedVpfClassRecord<'a> {
-    vpf_class_record: VpfClassRecord,
-    assigned_taxids: HashSet<NodeId>,
-    assigned_contigs: HashSet<&'a str>,
-}
-
-impl<'a> EnrichedVpfClassRecord<'a> {
-    fn new(vpf_class_record: VpfClassRecord) -> Self {
-        EnrichedVpfClassRecord {
-            vpf_class_record,
-            assigned_taxids: HashSet::new(),
-            assigned_contigs: HashSet::new(),
-        }
-    }
-
-    fn has_assignments(&self) -> bool {
-        !self.assigned_taxids.is_empty() || !self.assigned_contigs.is_empty()
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct CsvEnrichedVpfClassRecord {
-    virus_name: String,
-    class_name: String,
-    membership_ratio: f64,
-    virus_hit_score: f64,
-    confidence_score: f64,
-    assigned_taxids: String,
-    num_assigned_contigs: usize,
-}
-
-impl<'a> From<EnrichedVpfClassRecord<'a>> for CsvEnrichedVpfClassRecord {
-    fn from(other: EnrichedVpfClassRecord<'a>) -> Self {
-        CsvEnrichedVpfClassRecord {
-            virus_name: other.vpf_class_record.virus_name,
-            class_name: other.vpf_class_record.class_name,
-            membership_ratio: other.vpf_class_record.membership_ratio,
-            virus_hit_score: other.vpf_class_record.virus_hit_score,
-            confidence_score: other.vpf_class_record.confidence_score,
-            assigned_taxids: other.assigned_taxids.iter().join(";"),
-            num_assigned_contigs: other.assigned_contigs.len(),
-        }
-    }
-}
-
-
-fn enrich_vpf_class_record<'a, Tax: LabelledTaxonomy>(
-    tax: &'a Tax,
+struct RefinementContext<Tax: Taxonomy> {
+    taxonomy: Tax,
     rank_sym: Tax::RankSym,
-    rank_assignments: &'a RankAssignments,
-    allow_different_ranks: bool,
-    record: VpfClassRecord,
-) -> Option<EnrichedVpfClassRecord<'a>> {
-    let mut enriched = EnrichedVpfClassRecord::new(record);
+    rank_assignments: RankAssignments,
+    filters: Vec<VpfClassRecordFilter>,
+}
 
-    let mut found_mismatched_ranks = false;
-    let mut found_taxids = false;
+impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
+    fn enrich_vpf_class_record<'a, S: AsRef<str>, CE: Enrichment>(
+        &'a self,
+        allow_different_ranks: bool,
+        crispr_context: &CE::Context,
+        record: VpfClassRecord<S>,
+    ) -> Option<EnrichedVpfClassRecord<'a, S, CE>> {
+        let mut enriched = EnrichedVpfClassRecord::<'a, S, CE>::new(record);
 
-    for node in tax.nodes_with_label(&enriched.vpf_class_record.class_name) {
-        found_taxids = true;
+        let mut found_mismatched_ranks = false;
+        let mut found_taxids = false;
 
-        if let Some((taxids, contigs)) = rank_assignments.lookup_rank_node(node) {
-            if allow_different_ranks || tax.find_rank(node) == Some(rank_sym) {
-                enriched.assigned_taxids.extend(taxids);
-                enriched
-                    .assigned_contigs
-                    .extend(contigs.iter().map(|s| s.as_str()));
-            } else {
-                found_mismatched_ranks = true;
+        for node in self.taxonomy.nodes_with_label(enriched.vpf_class_record.class_name.as_ref()) {
+            found_taxids = true;
+
+            if let Some((taxids, contigs)) = self.rank_assignments.lookup_rank_node(node) {
+                if allow_different_ranks || self.taxonomy.find_rank(node) == Some(self.rank_sym) {
+                    enriched.assigned_taxids.extend(taxids);
+                    enriched
+                        .assigned_contigs
+                        .extend(contigs.iter().map(|s| s.as_str()));
+                } else {
+                    found_mismatched_ranks = true;
+                }
             }
         }
-    }
 
-    if !found_taxids {
-        eprintln!(
-            "Warning: No taxids found for classification {}",
-            &enriched.vpf_class_record.class_name
-        );
-    }
-
-    if found_mismatched_ranks {
-        eprintln!(
-            "Warning: Found taxids for classification {} but had mismatching ranks, skipping (use --allow-different-ranks to disable the check)",
-            &enriched.vpf_class_record.class_name
-        );
-    }
-
-    if enriched.has_assignments() {
-        Some(enriched)
-    } else {
-        None
-    }
-}
-
-#[derive(Default, Serialize)]
-struct ClassStats<'a> {
-    virus_count: u32,
-    assigned_taxids: HashSet<NodeId>,
-    assigned_contigs: HashSet<&'a str>
-}
-
-impl<'a> ClassStats<'a> {
-    fn add(&mut self, record: &EnrichedVpfClassRecord<'a>) {
-        self.virus_count += 1;
-        self.assigned_taxids.extend(&record.assigned_taxids);
-        self.assigned_contigs.extend(&record.assigned_contigs);
-    }
-}
-
-#[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum SummarySortBy {
-    ClassName,
-    VirusCount,
-    AssignedTaxIds,
-    AssignedContigs,
-}
-
-#[derive(Default)]
-struct EnrichmentSummary<'a> {
-    class_stats: HashMap<String, ClassStats<'a>>,
-}
-
-impl<'a> EnrichmentSummary<'a> {
-    fn account(&mut self, record: &EnrichedVpfClassRecord<'a>) {
-        let class_name = &*record.vpf_class_record.class_name;
-
-        self
-            .class_stats
-            .raw_entry_mut()
-            .from_key(class_name)
-            .or_insert_with(|| (class_name.to_owned(), ClassStats::default()))
-            .1
-            .add(record);
-    }
-
-    fn write<W: io::Write>(self, writer: W, sort: SummarySortBy) -> csv::Result<()> {
-        #[derive(Serialize)]
-        struct Record {
-            class_name: String,
-            virus_count: i32,
-            assigned_taxids: i32,
-            assigned_contigs: i32,
+        if !found_taxids {
+            eprintln!(
+                "Warning: No taxids found for classification {}",
+                enriched.vpf_class_record.class_name.as_ref(),
+            );
         }
 
-        let mut records = self
-            .class_stats
-            .into_iter()
-            .map(|(class_name, stats)| Record {
-                class_name,
-                virus_count: stats.virus_count as i32,
-                assigned_taxids: stats.assigned_taxids.len() as i32,
-                assigned_contigs: stats.assigned_contigs.len() as i32,
-            })
-            .collect_vec();
-
-        match sort {
-            SummarySortBy::ClassName => records.sort_by(|r1, r2| r1.class_name.cmp(&r2.class_name)),
-            SummarySortBy::VirusCount => records.sort_by_key(|r| -r.virus_count),
-            SummarySortBy::AssignedTaxIds => records.sort_by_key(|r| -r.assigned_taxids),
-            SummarySortBy::AssignedContigs => records.sort_by_key(|r| -r.assigned_contigs),
+        if found_mismatched_ranks {
+            eprintln!(
+                "Warning: Found taxids for classification {} but had mismatching ranks, skipping (use --allow-different-ranks to disable the check)",
+                enriched.vpf_class_record.class_name.as_ref(),
+            );
         }
 
+        if !enriched.has_assignments() {
+            return None;
+        }
+
+        let crisprs_found = enriched.crispr_enrichment.enrich(
+            crispr_context,
+            &enriched.vpf_class_record,
+            &enriched.assigned_taxids,
+            &enriched.assigned_contigs,
+        );
+
+        if !crisprs_found {
+            None
+        } else {
+            Some(enriched)
+        }
+    }
+
+    #[apply(Gat!)]
+    fn process_vpf_class_records<CE: Enrichment, Iter, W: io::Write>(
+        &self,
+        args: &RefineVpfClassArgs,
+        crispr_context: &CE::Context,
+        mut records: Iter,
+        output_writer: W,
+    ) -> anyhow::Result<()>
+    where
+        Iter: for<'n> LendingIterator<Item<'n> = csv::Result<VpfClassRecord<&'n str>>>,
+    {
         let mut csv_writer = csv::WriterBuilder::new()
             .has_headers(true)
             .delimiter(b'\t')
-            .from_writer(writer);
+            .from_writer(output_writer);
 
-        for row in records {
-            csv_writer.serialize(&row)?;
+        let filters = &self.filters;
+
+        let mut summary = EnrichmentSummary::<CE>::default();
+
+        while let Some(record) = records.next() {
+            let record = record?;
+
+            if !filters.iter().all(|f| f.apply(&record)) {
+                continue;
+            }
+
+            let Some(enriched) = self.enrich_vpf_class_record::<&str, CE>(args.allow_different_ranks, crispr_context, record) else {
+                continue;
+            };
+
+            if args.write_summary.is_some() {
+                summary.account(&enriched);
+            }
+
+            csv_writer.serialize(CsvEnrichedVpfClassRecord::from(enriched))?;
+        }
+
+        if let Some(summary_file) = &args.write_summary {
+            writing_new_file_or_stdout!(summary_file, writer => {
+                let writer = writer.context("Error creating summary file")?;
+
+                summary.write(writer, args.summary_sort_by)
+                    .context("Error writing summary")?;
+            });
         }
 
         csv_writer.flush()?;
+
         Ok(())
     }
-}
-
-fn write_refined_output<'a, W, I>(writer: W, refinement: I) -> Result<()>
-where
-    W: io::Write,
-    I: IntoIterator<Item = EnrichedVpfClassRecord<'a>>,
-{
-    let mut csv_writer = csv::WriterBuilder::new()
-        .has_headers(true)
-        .delimiter(b'\t')
-        .from_writer(writer);
-
-    for record in refinement {
-        let serializable_record = CsvEnrichedVpfClassRecord::from(record);
-        csv_writer.serialize(&serializable_record)?;
-    }
-
-    Ok(())
 }
 
 pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
@@ -488,48 +367,40 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
             rank_assignments.dropped_records, rank_assignments.total_records
         );
 
-        let csv_reader = csv::ReaderBuilder::new()
-            .has_headers(true)
-            .delimiter(b'\t')
-            .from_path(&args.vpf_class_prediction)
-            .context("Could not open VPF-Class prediction")?;
+        let context = RefinementContext { taxonomy: tax, rank_sym, rank_assignments, filters };
 
-        itertools::process_results(csv_reader.into_deserialize(), |records| {
-            let refinement = records
-                .filter(|record| filters.iter().all(|f| f.apply(record)))
-                .filter_map(|record| enrich_vpf_class_record(tax, rank_sym, &rank_assignments, args.allow_different_ranks, record));
+        let crispr_matches = if let Some(crispr_match_path) = &args.crispr_matches {
+            let data = load_crispr_match_data(crispr_match_path.as_ref())
+                .context("Loading CRISPR match data")?;
 
-            if let Some(summary_file) = &args.write_summary {
-                let mut summary = EnrichmentSummary::default();
+            eprintln!(
+                "Loaded CRISPR match data ({} viruses and {} hosts present)",
+                data.crispr_matches.0.key_interner().len(),
+                data.crispr_matches.0.value_interner().len()
+            );
 
-                let refinement = refinement.inspect(|record| summary.account(record));
+            Some(data)
+        } else {
+            None
+        };
 
-                writing_new_file_or_stdout!(&args.output, writer => {
-                    let writer = writer.context("Error creating output file")?;
+        let csv_records = vpf_class_record::vpf_class_records_reader(args.vpf_class_prediction.as_ref())
+            .context("Could not open VPF-Class prediction")?
+            .into_lending_iter()
+            .into_deserialize::<VpfClassRecordHKT>(None);
 
-                    write_refined_output(writer, refinement)
-                        .context("Error writing refined output")?;
-                });
+        writing_new_file_or_stdout!(&args.output, writer => {
+            let writer = writer.context("Error creating output file")?;
 
-                writing_new_file_or_stdout!(summary_file, writer => {
-                    let writer = writer.context("Error creating summary file")?;
-
-                    summary.write(writer, args.summary_sort_by)
-                        .context("Error writing summary")?;
-                });
-
-
-            } else {
-                writing_new_file_or_stdout!(&args.output, writer => {
-                    let writer = writer.context("Error creating output file")?;
-
-                    write_refined_output(writer, refinement)
-                        .context("Error writing refined output")?;
-                });
+            match crispr_matches {
+                Some(crispr_matches) => {
+                    context.process_vpf_class_records::<CrisprEnrichment, _, _>(&args, &&crispr_matches, csv_records, writer)?;
+                }
+                None => {
+                    context.process_vpf_class_records::<NoEnrichment, _, _>(&args, &NoEnrichmentContext, csv_records, writer)?;
+                }
             }
-
-            anyhow::Ok(())
-        })??;
+        });
     });
 
     Ok(())

@@ -4,6 +4,7 @@ pub mod csv_stream;
 pub mod filter;
 pub mod interned_mapping;
 pub mod progress_monitor;
+pub mod vpf_class_record;
 
 macro_rules! writing_new_file_or_stdout {
     ($path:expr, $writer:pat => $body:expr $(,)?) => {{
