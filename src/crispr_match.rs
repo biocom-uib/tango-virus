@@ -1,5 +1,6 @@
 use std::{io, path::Path};
 
+use anyhow::Context;
 use clap::Args;
 use tempdir::TempDir;
 
@@ -118,6 +119,7 @@ pub fn crispr_match(args: CrisprMatchArgs) -> anyhow::Result<()> {
         pipeline.set_dry_run(args.dry_run);
         pipeline.match_spacers(viral_seqs, metagenomic_seqs, args.perc_identity)?;
         pipeline.collect_virus_host_mapping()
+            .context("Collecting the virus-host mapping from the BLAST output")
     };
 
     let mapping = match run_pipeline() {

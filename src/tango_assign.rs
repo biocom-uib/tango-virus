@@ -150,7 +150,7 @@ pub struct TangoAssignArgs {
     #[clap(flatten)]
     taxonomy: PreprocessedTaxonomyArgs,
 
-    /// Path to the preprocessed reads file (presumably from preprocess-blastout). It should be a
+    /// Path to the preprocessed reads file (see `meteor preprocess-blastout`). It should be a
     /// file containing the parsed output of a mapping program, in the (tab-separated) format
     ///
     /// [read_id]    [species_id_1];...;[species_id_n]

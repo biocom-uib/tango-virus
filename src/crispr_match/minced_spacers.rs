@@ -1,4 +1,4 @@
-use std::{path::{Path, PathBuf, self}, process::Command, io, fs::File};
+use std::{path::{Path, PathBuf, self}, process::Command, io, fs::{File, self}};
 
 use anyhow::Context;
 use regex::Regex;
@@ -94,8 +94,6 @@ impl MincedSpacersPipeline {
     fn blastn_cmd(&self, perc_identity: i32, subject: &Path) -> io::Result<Command> {
         let mut cmd = self.blastn.new_command();
 
-        let query_path = self.work_dir.join(SPACERS_FILE_NAME);
-
         if let Some(num_threads) = self.blastn_num_threads {
             cmd.args(["-num_threads", &num_threads.to_string()]);
         }
@@ -105,7 +103,7 @@ impl MincedSpacersPipeline {
             .arg("-perc_identity")
             .arg(perc_identity.to_string())
             .arg("-query")
-            .arg(query_path)
+            .arg(SPACERS_FILE_NAME)
             .arg("-subject")
             .arg(path::absolute(subject)?)
             .args(["-outfmt", BLASTOUT_FMT])
@@ -121,6 +119,9 @@ impl MincedSpacersPipeline {
         metagenomic_seqs: &Path,
         perc_identity: i32,
     ) -> anyhow::Result<()> {
+
+        fs::create_dir_all(&self.work_dir)?;
+
         if self.work_dir.join(SPACERS_FILE_NAME).exists() {
             eprintln!("{SPACERS_FILE_NAME} already exists in the working directory, skipping
                 MinCED. Delete the file to re-generate it");
@@ -164,7 +165,8 @@ impl MincedSpacersPipeline {
         let spacer_suffix_regex =
             Regex::new(SPACER_SUFFIX_REGEX).expect("Error compiling SPACER_SUFFIX_REGEX");
 
-        let file_reader = File::open(self.work_dir.join(BLASTOUT_FILE_NAME))?;
+        let file_reader = File::open(self.work_dir.join(BLASTOUT_FILE_NAME))
+            .context("Reading blastn output")?;
 
         let mapping = InternedMultiMapping::read_tsv_with(file_reader, false, |record| {
             let record = record.deserialize::<SpacersBlastRecord>(None)?;

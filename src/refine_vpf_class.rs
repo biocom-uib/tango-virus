@@ -27,7 +27,7 @@ pub struct RefineVpfClassArgs {
     #[clap(flatten)]
     taxonomy: PreprocessedTaxonomyArgs,
 
-    /// TANGO3 metagenomic assignment output
+    /// TANGO metagenomic assignment output (see `meteor tango-assign`)
     metagenomic_assignment: String,
 
     /// Use CRISPR match data from this file (see `meteor crispr-match`) to restrict the refinement.
