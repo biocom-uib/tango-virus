@@ -107,13 +107,13 @@ pub struct CrisprEnrichmentSummaryClassData<'a> {
 
 #[derive(Default)]
 pub struct CrisprEnrichmentSummaryClassStats {
-    pub crispr_match_contigs: String,
+    pub num_crispr_matched_contigs: usize,
 }
 
 impl<'a> From<CrisprEnrichmentSummaryClassData<'a>> for CrisprEnrichmentSummaryClassStats {
     fn from(value: CrisprEnrichmentSummaryClassData<'a>) -> Self {
         Self {
-            crispr_match_contigs: value.crispr_match_contigs.iter().join(";"),
+            num_crispr_matched_contigs: value.crispr_match_contigs.len(),
         }
     }
 }
@@ -122,7 +122,7 @@ impl SerializeFlat for CrisprEnrichmentSummaryClassStats {
     const FIELD_COUNT: usize = 1;
 
     fn serialize_flat<Ser: SerializeStruct>(&self, row: &mut Ser) -> Result<(), Ser::Error> {
-        row.serialize_field("crispr_match_contigs", &self.crispr_match_contigs)
+        row.serialize_field("num_crispr_matched_contigs", &self.num_crispr_matched_contigs)
     }
 }
 
