@@ -20,7 +20,7 @@ const SPACER_SUFFIX_REGEX: &str = r#"_CRISPR_\d+_spacer_\d+$"#;
 #[derive(Deserialize)]
 struct SpacersBlastRecord<'a> {
     spacer_name: &'a str,
-    host_name: &'a str,
+    virus_name: &'a str,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -172,9 +172,9 @@ impl MincedSpacersPipeline {
             let record = record.deserialize::<SpacersBlastRecord>(None)?;
 
             if let Some(suffix_match) = spacer_suffix_regex.find(record.spacer_name) {
-                let virus_name = &record.spacer_name[..suffix_match.start()];
+                let host_name = &record.spacer_name[..suffix_match.start()];
 
-                Ok((virus_name, record.host_name))
+                Ok((record.virus_name, host_name))
             } else {
                 anyhow::bail!(
                     "Could not parse spacer name from blast output: {:?}",
