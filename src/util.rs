@@ -1,5 +1,6 @@
 pub mod blastout;
 pub mod cli_tools;
+pub mod csv_flatten_fix;
 pub mod csv_stream;
 pub mod filter;
 pub mod interned_mapping;

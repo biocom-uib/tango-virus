@@ -312,7 +312,7 @@ impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
                 summary.account(&enriched);
             }
 
-            csv_writer.serialize(CsvEnrichedVpfClassRecord::from(enriched))?;
+            csv_writer.serialize(CsvEnrichedVpfClassRecord::<&str, CE>::from(enriched))?;
         }
 
         if let Some(summary_file) = &args.write_summary {

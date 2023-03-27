@@ -1,10 +1,10 @@
 use std::{num::ParseFloatError, path::Path, fs::File};
 
 use lending_iterator::HKT;
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, ser::SerializeStruct};
 use thiserror::Error;
 
-use super::filter::{self, FromStrFilter};
+use super::{filter::{self, FromStrFilter}, csv_flatten_fix::SerializeFlat};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VpfClassRecord<S = String> {
@@ -13,6 +13,22 @@ pub struct VpfClassRecord<S = String> {
     pub membership_ratio: f64,
     pub virus_hit_score: f64,
     pub confidence_score: f64,
+}
+
+impl<S: AsRef<str>> SerializeFlat for VpfClassRecord<S> {
+    const FIELD_COUNT: usize = 5;
+
+    fn serialize_flat<Ser>(&self, row: &mut Ser) -> Result<(), Ser::Error>
+    where
+        Ser: SerializeStruct,
+    {
+        row.serialize_field("virus_name", self.virus_name.as_ref())?;
+        row.serialize_field("class_name", self.class_name.as_ref())?;
+        row.serialize_field("membership_ratio", &self.membership_ratio)?;
+        row.serialize_field("virus_hit_score", &self.virus_hit_score)?;
+        row.serialize_field("confidence_score", &self.confidence_score)?;
+        Ok(())
+    }
 }
 
 pub type VpfClassRecordHKT = HKT!(VpfClassRecord<&str>);

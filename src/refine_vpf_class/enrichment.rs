@@ -1,19 +1,19 @@
 use std::collections::HashSet;
 
 use itertools::Itertools;
-use serde::Serialize;
+use serde::{Serialize, ser::SerializeStruct, Serializer};
 
-use crate::{util::vpf_class_record::VpfClassRecord, taxonomy::NodeId};
+use crate::{util::{vpf_class_record::VpfClassRecord, csv_flatten_fix::{SerializeFlat, serialize_flat_struct}}, taxonomy::NodeId};
 
 use super::CrisprMatchData;
 
 
 pub trait Enrichment: Default {
     type Context;
-    type CsvFields: Serialize + From<Self>;
+    type CsvFields: SerializeFlat + From<Self>;
 
     type SummaryClassData: Default;
-    type SummaryClassStats: Serialize + From<Self::SummaryClassData>;
+    type SummaryClassStats: SerializeFlat + From<Self::SummaryClassData>;
 
     fn enrich<S: AsRef<str>>(
         &mut self,
@@ -32,11 +32,27 @@ pub trait Enrichment: Default {
 
 pub struct NoEnrichmentContext;
 
-#[derive(Default, Serialize)]
+#[derive(Default)]
 pub struct NoEnrichmentData;
 
-#[derive(Default, Serialize)]
-pub struct NoEnrichment {}
+impl SerializeFlat for NoEnrichmentData {
+    const FIELD_COUNT: usize = 1;
+
+    fn serialize_flat<Ser: SerializeStruct>(&self, _row: &mut Ser) -> Result<(), Ser::Error> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NoEnrichment;
+
+impl SerializeFlat for NoEnrichment {
+    const FIELD_COUNT: usize = 1;
+
+    fn serialize_flat<Ser: SerializeStruct>(&self, _row: &mut Ser) -> Result<(), Ser::Error> {
+        Ok(())
+    }
+}
 
 impl Enrichment for NoEnrichment {
     type Context = NoEnrichmentContext;
@@ -64,7 +80,6 @@ pub struct CrisprEnrichment<'a> {
     pub crispr_matches: HashSet<&'a str>,
 }
 
-#[derive(Serialize)]
 pub struct CrisprMatchesCsvFields {
     pub crispr_matches: String,
 }
@@ -77,12 +92,20 @@ impl<'a> From<CrisprEnrichment<'a>> for CrisprMatchesCsvFields {
     }
 }
 
+impl SerializeFlat for CrisprMatchesCsvFields {
+    const FIELD_COUNT: usize = 1;
+
+    fn serialize_flat<Ser: SerializeStruct>(&self, row: &mut Ser) -> Result<(), Ser::Error> {
+        row.serialize_field("crispr_matches", &self.crispr_matches)
+    }
+}
+
 #[derive(Default)]
 pub struct CrisprEnrichmentSummaryClassData<'a> {
     pub crispr_match_contigs: HashSet<&'a str>,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default)]
 pub struct CrisprEnrichmentSummaryClassStats {
     pub crispr_match_contigs: String,
 }
@@ -92,6 +115,14 @@ impl<'a> From<CrisprEnrichmentSummaryClassData<'a>> for CrisprEnrichmentSummaryC
         Self {
             crispr_match_contigs: value.crispr_match_contigs.iter().join(";"),
         }
+    }
+}
+
+impl SerializeFlat for CrisprEnrichmentSummaryClassStats {
+    const FIELD_COUNT: usize = 1;
+
+    fn serialize_flat<Ser: SerializeStruct>(&self, row: &mut Ser) -> Result<(), Ser::Error> {
+        row.serialize_field("crispr_match_contigs", &self.crispr_match_contigs)
     }
 }
 
@@ -147,20 +178,42 @@ impl<'a, S, CE: Default> EnrichedVpfClassRecord<'a, S, CE> {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct CsvEnrichedVpfClassRecord<S, CrisprMatchFields> {
-    #[serde(flatten)]
+#[derive(Debug)]
+pub struct CsvEnrichedVpfClassRecord<S, CE: Enrichment> {
     pub vpf_class_record: VpfClassRecord<S>,
 
     pub assigned_taxids: String,
     pub num_assigned_contigs: usize,
 
-    #[serde(flatten)]
-    pub crispr_match_fields: CrisprMatchFields,
+    pub crispr_match_fields: CE::CsvFields,
 }
 
-impl<'a, S, CE> From<EnrichedVpfClassRecord<'a, S, CE>>
-    for CsvEnrichedVpfClassRecord<S, CE::CsvFields>
+impl<S: AsRef<str>, CE: Enrichment> Serialize for CsvEnrichedVpfClassRecord<S, CE> {
+    fn serialize<Ser: Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
+        serialize_flat_struct(serializer, "CsvEnrichedVpfClassRecord", self)
+    }
+}
+
+impl<S, CE> SerializeFlat for CsvEnrichedVpfClassRecord<S, CE>
+where
+    S: AsRef<str>,
+    CE: Enrichment,
+{
+    const FIELD_COUNT: usize = VpfClassRecord::<S>::FIELD_COUNT + 2 + CE::CsvFields::FIELD_COUNT;
+
+    fn serialize_flat<Ser: SerializeStruct>(&self, row: &mut Ser) -> Result<(), Ser::Error> {
+        self.vpf_class_record.serialize_flat(row)?;
+
+        row.serialize_field("assigned_taxids", &self.assigned_taxids)?;
+        row.serialize_field("num_assigned_contigs", &self.num_assigned_contigs)?;
+
+        self.crispr_match_fields.serialize_flat(row)?;
+
+        Ok(())
+    }
+}
+
+impl<'a, S, CE> From<EnrichedVpfClassRecord<'a, S, CE>> for CsvEnrichedVpfClassRecord<S, CE>
 where
     CE: Enrichment,
 {

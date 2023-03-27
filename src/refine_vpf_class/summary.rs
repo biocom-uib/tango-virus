@@ -2,9 +2,9 @@ use std::{collections::{HashSet, HashMap}, io};
 
 use clap::ValueEnum;
 use itertools::Itertools;
-use serde::Serialize;
+use serde::{Serialize, ser::SerializeStruct, Serializer};
 
-use crate::taxonomy::NodeId;
+use crate::{taxonomy::NodeId, util::csv_flatten_fix::{SerializeFlat, serialize_flat_struct}};
 
 use super::enrichment::{EnrichedVpfClassRecord, Enrichment};
 
@@ -16,13 +16,11 @@ struct ClassData<'a, CE: Enrichment> {
     crispr_enrichment_data: CE::SummaryClassData,
 }
 
-#[derive(Serialize)]
 struct ClassStats<CE: Enrichment> {
     class_name: String,
     virus_count: i32,
     num_assigned_taxids: i32,
     num_assigned_contigs: i32,
-    #[serde(flatten)]
     crispr_enrichment_stats: CE::SummaryClassStats,
 }
 
@@ -46,6 +44,26 @@ impl<'a, CE: Enrichment> ClassData<'a, CE> {
         record.crispr_enrichment.add_class_data(&mut self.crispr_enrichment_data);
     }
 }
+
+impl<CE: Enrichment> SerializeFlat for ClassStats<CE> {
+    const FIELD_COUNT: usize = 4 + CE::SummaryClassStats::FIELD_COUNT;
+
+    fn serialize_flat<Ser: SerializeStruct>(&self, row: &mut Ser) -> Result<(), Ser::Error> {
+        row.serialize_field("class_name", &self.class_name)?;
+        row.serialize_field("virus_count", &self.virus_count)?;
+        row.serialize_field("num_assigned_taxids", &self.num_assigned_taxids)?;
+        row.serialize_field("num_assigned_contigs", &self.num_assigned_contigs)?;
+        self.crispr_enrichment_stats.serialize_flat(row)?;
+        Ok(())
+    }
+}
+
+impl<CE: Enrichment> Serialize for ClassStats<CE> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_flat_struct(serializer, "ClassStats", self)
+    }
+}
+
 
 #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SummarySortBy {
