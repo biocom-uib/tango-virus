@@ -204,9 +204,9 @@ fn prepare_files_for_makeblastdb(work_dir: &Path, uniprot_files: &[PathBuf]) -> 
         },
     );
 
-    processing_errors.context("Processing UniProt XML files")?;
     fasta_errors.context("Writing the FASTA file")?;
     taxid_map_errors.context("Writing the TAXID mapping file")?;
+    processing_errors.context("Processing UniProt XML files")?;
 
     Ok(())
 }
@@ -255,6 +255,8 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
         temp_dir.insert(TempDir::new("prepare-uniprot-blastdb")?).path()
     };
 
+    fs::create_dir_all(work_dir)?;
+
     let fasta_path = work_dir.join(FASTA_FILE_NAME);
     let taxid_map_path = work_dir.join(TAXID_MAP_FILE_NAME);
 
@@ -273,11 +275,11 @@ pub fn prepare_uniprot_blastdb(args: PrepareUniProtBlastDBArgs) -> anyhow::Resul
         eprintln!("makeblastdb input files already exist, proceeding to makeblastdb");
     }
 
-    let db_path = args
-        .output
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or(work_dir.join("blastdb"));
+    let db_path = if let Some(output) = &args.output {
+        PathBuf::from(output)
+    } else {
+        work_dir.join("blastdb")
+    };
 
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
