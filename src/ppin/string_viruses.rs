@@ -194,8 +194,11 @@ pub struct StringVirusesInteractionsArgs {
     #[clap(long)]
     stringdb_dir: String,
 
-    /// Output path. The result is a tab-separated values file containing three columns:
-    /// protein_1, protein_2 and combined_score. Use '-' to print to standard output.
+    /// Output path. The result is a tab-separated values with columns
+    ///   protein_accession_a, protein_accession_b, combined_score, virus_name, virus_taxid, host_taxid, edge_kind
+    /// where edge_kind is always one of virus-virus, virus-host, host-virus or host-host
+    ///
+    /// Use '-' to print to standard output.
     #[clap(short, long, default_value = "-")]
     output: String,
 }
@@ -227,6 +230,7 @@ pub enum EdgeKind {
 pub struct PredictedInteraction<S = String> {
     pub protein_accession_a: S,
     pub protein_accession_b: S,
+    pub combined_score: i32,
     pub virus_name: Option<S>,
     pub virus_taxid: Option<usize>,
     pub host_taxid: Option<usize>,
@@ -326,6 +330,7 @@ impl PredictionContext {
                     Some(PredictedInteraction {
                         protein_accession_a: acc_a,
                         protein_accession_b: acc_b,
+                        combined_score: record.combined_score,
                         virus_name: None,
                         virus_taxid: None,
                         host_taxid: Some(taxid_a.0),
@@ -339,6 +344,7 @@ impl PredictionContext {
                 Some(PredictedInteraction {
                     protein_accession_a: acc_a,
                     protein_accession_b: best_hit_b.accession,
+                    combined_score: record.combined_score,
                     virus_name: Some(best_hit_b.hit_virus_name),
                     virus_taxid: Some(taxid_b.0),
                     host_taxid: Some(taxid_a.0),
@@ -351,6 +357,7 @@ impl PredictionContext {
                 Some(PredictedInteraction {
                     protein_accession_a: best_hit_a.accession,
                     protein_accession_b: acc_b,
+                    combined_score: record.combined_score,
                     virus_name: Some(best_hit_a.hit_virus_name),
                     virus_taxid: Some(taxid_a.0),
                     host_taxid: Some(taxid_b.0),
@@ -371,6 +378,7 @@ impl PredictionContext {
                     Some(PredictedInteraction {
                         protein_accession_a: best_hit_a.accession,
                         protein_accession_b: best_hit_b.accession,
+                        combined_score: record.combined_score,
                         virus_name: Some(best_hit_a.hit_virus_name),
                         virus_taxid: Some(taxid_a.0),
                         host_taxid: None,
