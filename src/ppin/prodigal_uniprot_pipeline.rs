@@ -1,4 +1,4 @@
-use std::{path::{PathBuf, Path, self}, process::Command, io, fs::File};
+use std::{path::{PathBuf, Path, self}, process::{Command, Stdio}, io, fs::File};
 
 use anyhow::Context;
 use clap::Args;
@@ -69,7 +69,8 @@ impl ProdigalBlastpPipeline {
             .arg(FAA_FILE_NAME)
             .arg("-i")
             .arg(path::absolute(viral_seqs)?)
-            .args(["-p", &self.prodigal_procedure]);
+            .args(["-p", &self.prodigal_procedure])
+            .stdout(Stdio::null()); // silence prodigal flatfile output
 
         Ok(cmd)
     }
@@ -234,6 +235,8 @@ pub fn match_viral_proteins(args: MatchViralProteinsArgs) -> anyhow::Result<()> 
     } else {
         temp_dir.insert(TempDir::new("match-viral-proteins")?).path()
     };
+
+    fs::create_dir_all(work_dir)?;
 
     let run_pipeline = || {
         let mut pipeline = ProdigalBlastpPipeline::new(prodigal, blastp, work_dir.to_path_buf());
