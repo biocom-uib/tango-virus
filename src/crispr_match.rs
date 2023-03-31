@@ -98,6 +98,10 @@ pub fn crispr_match(args: CrisprMatchArgs) -> anyhow::Result<()> {
 
     let blast_prefix = args.blast_prefix.as_ref().map(|s| s.as_ref());
 
+    let Some(makeblastdb) = cli_tools::BlastTool::resolve(blast_prefix, "makeblastdb")? else {
+        anyhow::bail!("Could not find a makeblastdb executable");
+    };
+
     let Some(blastn) = cli_tools::BlastTool::resolve(blast_prefix, "blastn")? else {
         anyhow::bail!("Could not find a blastn executable");
     };
@@ -114,7 +118,7 @@ pub fn crispr_match(args: CrisprMatchArgs) -> anyhow::Result<()> {
     };
 
     let run_pipeline = || {
-        let mut pipeline = MincedSpacersPipeline::new(minced, blastn, work_dir);
+        let mut pipeline = MincedSpacersPipeline::new(minced, makeblastdb, blastn, work_dir);
         pipeline.set_blastn_num_threads(args.num_threads);
         pipeline.set_dry_run(args.dry_run);
         pipeline.match_spacers(viral_seqs, metagenomic_seqs, args.perc_identity)?;

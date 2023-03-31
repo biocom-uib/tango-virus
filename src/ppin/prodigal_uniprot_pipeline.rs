@@ -1,4 +1,4 @@
-use std::{path::{PathBuf, Path, self}, process::{Command, Stdio}, io, fs::File};
+use std::{path::{PathBuf, Path, self}, process::{Command, Stdio}, io, fs::{File, self}};
 
 use anyhow::Context;
 use clap::Args;
@@ -15,7 +15,7 @@ const FAA_FILE_NAME: &str = "predicted_viral_proteins.faa";
 const PROTEIN_VIRUS_NAME_REGEX: &str = r#"_\d+$"#;
 const DEFAULT_PRODIGAL_PROCEDURE: &str = "meta";
 
-const DEFAULT_PERC_IDENTITY: i32 = 95;
+const DEFAULT_EVALUE_THRESHOLD: f32 = 1e-3;
 
 const BLASTOUT_FMT: &str = "6 qseqid saccver staxid";
 const BLASTOUT_FILE_NAME: &str = "uniprot_viral_search.blastout";
@@ -75,7 +75,7 @@ impl ProdigalBlastpPipeline {
         Ok(cmd)
     }
 
-    fn blastp_cmd(&self, uniprot_blastdb: &Path, perc_identity: i32) -> io::Result<Command> {
+    fn blastp_cmd(&self, uniprot_blastdb: &Path, evalue: f32) -> io::Result<Command> {
         let mut cmd = self.blastp.new_command();
 
         if let Some(num_threads) = self.blastp_num_threads {
@@ -85,8 +85,8 @@ impl ProdigalBlastpPipeline {
         cmd.current_dir(&self.work_dir)
             .arg("-db")
             .arg(path::absolute(uniprot_blastdb)?)
-            .arg("-perc_identity")
-            .arg(perc_identity.to_string())
+            .arg("-evalue")
+            .arg(evalue.to_string())
             .arg("-query")
             .arg(FAA_FILE_NAME)
             .args(["-outfmt", BLASTOUT_FMT])
@@ -100,11 +100,11 @@ impl ProdigalBlastpPipeline {
         &self,
         viral_seqs: &Path,
         uniprot_blastdb: &Path,
-        perc_identity: i32,
+        evalue: f32,
     ) -> anyhow::Result<()> {
 
         if self.work_dir.join(FAA_FILE_NAME).exists() {
-            eprintln!("{FAA_FILE_NAME} already exists in the working directory, skipping MinCED.
+            eprintln!("{FAA_FILE_NAME} already exists in the working directory, skipping MinCED. \
                 Delete the file to re-generate it");
 
         } else {
@@ -122,11 +122,11 @@ impl ProdigalBlastpPipeline {
         }
 
         if self.work_dir.join(BLASTOUT_FILE_NAME).exists() {
-            eprintln!("{BLASTOUT_FILE_NAME} already exists in the working directory, skipping BLAST
+            eprintln!("{BLASTOUT_FILE_NAME} already exists in the working directory, skipping BLAST \
                 search. Delete the file to re-generate it");
 
         } else {
-            let mut blastp_cmd = self.blastp_cmd(uniprot_blastdb, perc_identity)?;
+            let mut blastp_cmd = self.blastp_cmd(uniprot_blastdb, evalue)?;
 
             eprintln!("Running {blastp_cmd:?}");
 
@@ -198,9 +198,9 @@ pub struct MatchViralProteinsArgs {
     #[clap(long, help_heading = Some("BLAST Options"))]
     uniprot_blastdb: String,
 
-    /// Minimum hit identity % for the blastn search (0-100).
-    #[clap(long, help_heading = Some("BLAST Options"), default_value_t = DEFAULT_PERC_IDENTITY)]
-    perc_identity: i32,
+    /// E-value threshold for the blastp search.
+    #[clap(long, help_heading = Some("BLAST Options"), default_value_t = DEFAULT_EVALUE_THRESHOLD)]
+    evalue: f32,
 
     /// Number of threads (blastp -num_threads option).
     #[clap(long, help_heading = Some("BLAST Options"))]
@@ -243,7 +243,7 @@ pub fn match_viral_proteins(args: MatchViralProteinsArgs) -> anyhow::Result<()> 
         pipeline.set_dry_run(args.dry_run);
         pipeline.set_prodigal_procedure(&args.prodigal_procedure);
         pipeline.set_blastp_num_threads(args.num_threads);
-        pipeline.find_and_match_proteins(args.viral_seqs.as_ref(), args.uniprot_blastdb.as_ref(), args.perc_identity)?;
+        pipeline.find_and_match_proteins(args.viral_seqs.as_ref(), args.uniprot_blastdb.as_ref(), args.evalue)?;
         pipeline.collect_viral_protein_mapping()
     };
 

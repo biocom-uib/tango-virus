@@ -11,6 +11,9 @@ use super::VirusHostMapping;
 const CRISPRS_FILE_NAME: &str = "crisprs.txt";
 const SPACERS_FILE_NAME: &str = "crisprs_spacers.fa"; // hardcoded in minced since v0.1.5
 
+const VIRAL_SEQS_BLASTDB_NAME: &str = "viral_seqs.blastdb";
+const VIRAL_SEQS_BLASTDB_NDB_NAME: &str = "viral_seqs.blastdb.ndb";
+
 const BLASTOUT_FILE_NAME: &str = "spacer_search.blastout";
 
 const BLASTOUT_FMT: &str = "6 qaccver saccver";
@@ -55,6 +58,7 @@ impl CliTool for MincedTool {
 
 pub struct MincedSpacersPipeline {
     minced: MincedTool,
+    makeblastdb: BlastTool,
     blastn: BlastTool,
     work_dir: PathBuf,
     blastn_num_threads: Option<i32>,
@@ -62,9 +66,15 @@ pub struct MincedSpacersPipeline {
 }
 
 impl MincedSpacersPipeline {
-    pub fn new(minced: MincedTool, blastn: BlastTool, work_dir: &Path) -> Self {
+    pub fn new(
+        minced: MincedTool,
+        makeblastdb: BlastTool,
+        blastn: BlastTool,
+        work_dir: &Path,
+    ) -> Self {
         MincedSpacersPipeline {
             minced,
+            makeblastdb,
             blastn,
             work_dir: work_dir.to_path_buf(),
             blastn_num_threads: None,
@@ -91,7 +101,21 @@ impl MincedSpacersPipeline {
         Ok(cmd)
     }
 
-    fn blastn_cmd(&self, perc_identity: i32, subject: &Path) -> io::Result<Command> {
+    fn makeblastdb_cmd(&self, viral_seqs: &Path) -> io::Result<Command> {
+        let mut cmd = self.makeblastdb.new_command();
+
+        cmd.current_dir(&self.work_dir)
+            .args(["-input_type", "fasta"])
+            .args(["-dbtype", "nucl"])
+            .arg("-in")
+            .arg(path::absolute(viral_seqs)?)
+            .arg("-out")
+            .arg(VIRAL_SEQS_BLASTDB_NAME);
+
+        Ok(cmd)
+    }
+
+    fn blastn_cmd(&self, perc_identity: i32) -> io::Result<Command> {
         let mut cmd = self.blastn.new_command();
 
         if let Some(num_threads) = self.blastn_num_threads {
@@ -104,8 +128,8 @@ impl MincedSpacersPipeline {
             .arg(perc_identity.to_string())
             .arg("-query")
             .arg(SPACERS_FILE_NAME)
-            .arg("-subject")
-            .arg(path::absolute(subject)?)
+            .arg("-db")
+            .arg(VIRAL_SEQS_BLASTDB_NAME)
             .args(["-outfmt", BLASTOUT_FMT])
             .arg("-out")
             .arg(BLASTOUT_FILE_NAME);
@@ -119,11 +143,10 @@ impl MincedSpacersPipeline {
         metagenomic_seqs: &Path,
         perc_identity: i32,
     ) -> anyhow::Result<()> {
-
         fs::create_dir_all(&self.work_dir)?;
 
         if self.work_dir.join(SPACERS_FILE_NAME).exists() {
-            eprintln!("{SPACERS_FILE_NAME} already exists in the working directory, skipping
+            eprintln!("{SPACERS_FILE_NAME} already exists in the working directory, skipping \
                 MinCED. Delete the file to re-generate it");
 
         } else {
@@ -140,12 +163,29 @@ impl MincedSpacersPipeline {
             }
         }
 
+        if self.work_dir.join(VIRAL_SEQS_BLASTDB_NDB_NAME).exists() {
+            eprintln!("{VIRAL_SEQS_BLASTDB_NDB_NAME} already exists in the working directory, skipping makeblastdb. \
+                Delete all {VIRAL_SEQS_BLASTDB_NAME}* files to re-generate the database");
+        } else {
+            let mut makeblastdb_cmd = self.makeblastdb_cmd(viral_seqs)?;
+
+            eprintln!("Running {makeblastdb_cmd:?}");
+
+            if !self.dry_run {
+                let makeblastdb_status = makeblastdb_cmd.status().context("Running makeblastdb")?;
+
+                if !makeblastdb_status.success() {
+                    anyhow::bail!("makeblastdb finished with non-zero exit code: {}", makeblastdb_status.code().unwrap_or(0));
+                }
+            }
+        }
+
         if self.work_dir.join(BLASTOUT_FILE_NAME).exists() {
-            eprintln!("{BLASTOUT_FILE_NAME} already exists in the working directory, skipping BLAST
+            eprintln!("{BLASTOUT_FILE_NAME} already exists in the working directory, skipping BLAST \
                 search. Delete the file to re-generate it");
 
         } else {
-            let mut blastn_cmd = self.blastn_cmd(perc_identity, viral_seqs)?;
+            let mut blastn_cmd = self.blastn_cmd(perc_identity)?;
 
             eprintln!("Running {blastn_cmd:?}");
 
