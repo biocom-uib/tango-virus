@@ -1,18 +1,22 @@
 use std::collections::HashSet;
 
 use itertools::Itertools;
-use serde::{Serialize, ser::SerializeStruct, Serializer};
+use serde::{ser::SerializeStruct, Serialize, Serializer};
 
-use crate::{util::{vpf_class_record::VpfClassRecord, csv_flatten_fix::{SerializeFlat, serialize_flat_struct}}, taxonomy::NodeId};
-
-use super::CrisprMatchData;
-
+use crate::{
+    crispr_match::CrisprMatchData,
+    taxonomy::NodeId,
+    util::{
+        csv_flatten_fix::{serialize_flat_struct, SerializeFlat},
+        vpf_class_record::VpfClassRecord,
+    },
+};
 
 pub trait Enrichment: Default {
     type Context;
     type CsvFields: SerializeFlat + From<Self>;
 
-    type SummaryClassData: Default;
+    type SummaryClassData: Default + Clone;
     type SummaryClassStats: SerializeFlat + From<Self::SummaryClassData>;
 
     fn enrich<S: AsRef<str>>(
@@ -32,7 +36,7 @@ pub trait Enrichment: Default {
 
 pub struct NoEnrichmentContext;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct NoEnrichmentData;
 
 impl SerializeFlat for NoEnrichmentData {
@@ -43,7 +47,7 @@ impl SerializeFlat for NoEnrichmentData {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct NoEnrichment;
 
 impl SerializeFlat for NoEnrichment {
@@ -75,7 +79,7 @@ impl Enrichment for NoEnrichment {
     }
 }
 
-#[derive(Default, Serialize)]
+#[derive(Default, Clone, Serialize)]
 pub struct CrisprEnrichment<'a> {
     pub crispr_matches: HashSet<&'a str>,
 }
@@ -100,12 +104,12 @@ impl SerializeFlat for CrisprMatchesCsvFields {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CrisprEnrichmentSummaryClassData<'a> {
     pub crispr_match_contigs: HashSet<&'a str>,
 }
 
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 pub struct CrisprEnrichmentSummaryClassStats {
     pub num_crispr_matched_contigs: usize,
 }

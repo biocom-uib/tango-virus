@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io, iter,
-    path::Path, fs::File
+    path::Path,
 };
 
 use anyhow::{Context, Result};
@@ -9,13 +9,20 @@ use clap::Args;
 use lending_iterator::prelude::*;
 
 use crate::{
+    crispr_match::CrisprMatchData,
     preprocessed_taxonomy::{with_some_taxonomy, PreprocessedTaxonomyArgs},
+    refine_vpf_class::enrichment::{CrisprEnrichment, NoEnrichment, NoEnrichmentContext},
     tango_assign::AssignmentRecord,
     taxonomy::{LabelledTaxonomy, NodeId, Taxonomy},
-    util::{writing_new_file_or_stdout, csv_stream::CsvReaderIterExt, vpf_class_record::{VpfClassRecordFilter, VpfClassRecord, VpfClassRecordHKT, self}, filter::FromStrFilter}, crispr_match::VirusHostMapping, refine_vpf_class::enrichment::{CrisprEnrichment, NoEnrichment, NoEnrichmentContext},
+    util::{
+        csv_stream::CsvReaderIterExt,
+        filter::FromStrFilter,
+        vpf_class_record::{self, VpfClassRecord, VpfClassRecordFilter, VpfClassRecordHKT},
+        writing_new_file_or_stdout,
+    },
 };
 
-use self::{enrichment::{Enrichment, EnrichedVpfClassRecord, CsvEnrichedVpfClassRecord}, summary::{EnrichmentSummary, SummarySortBy}};
+use self::{enrichment::{Enrichment, EnrichedVpfClassRecord, CsvEnrichedVpfClassRecord}, summary::{EnrichmentSummary, SummarySortBy, RecordDropReason}};
 
 pub(crate) mod enrichment;
 pub(crate) mod summary;
@@ -53,16 +60,21 @@ pub struct RefineVpfClassArgs {
     rank: Option<String>,
 
     /// Refined VPF-Class output file (use '-' for STDOUT)
-    #[clap(short, long)]
+    #[clap(short, long, default_value = "-")]
     output: String,
 
     /// Filters to apply before processing. Example: --filter 'membership_ratio>=0.2'
     #[clap(long)]
     filter: Vec<String>,
 
-    /// Print a summary of class frequencies and their average membership ratio.
+    /// Log every dropped record and the reason.
+    #[clap(short, long)]
+    verbose: bool,
+
+    /// Print a summary of class frequencies and their average membership ratio (use '-' for
+    /// STDOUT)
     #[clap(long, value_name = "SUMMARY_FILE")]
-    write_summary: Option<String>,
+    write_class_summary: Option<String>,
 
     ///// Column to sort --write-summary by
     #[clap(long, value_enum, default_value_t = SummarySortBy::VirusCount)]
@@ -137,6 +149,7 @@ fn load_rank_assignments<Tax: Taxonomy>(
     tax: &Tax,
     rank_sym: Tax::RankSym,
     include_descendants: bool,
+    verbose: bool,
     assignments_path: &Path,
 ) -> Result<RankAssignments> {
     let csv_reader = csv::ReaderBuilder::new()
@@ -172,8 +185,23 @@ fn load_rank_assignments<Tax: Taxonomy>(
             } else {
                 assignments.dropped_records += 1;
 
+                if verbose {
+                    eprintln!(
+                        "Warning: No valid descendants found for assignment {:?} (taxid:{}) (rank: {})",
+                        record.assigned_name,
+                        node,
+                        tax.find_rank(node)
+                            .and_then(|sym| tax.rank_sym_str(sym))
+                            .unwrap_or(""),
+                    );
+                }
+            }
+        } else {
+            assignments.dropped_records += 1;
+
+            if verbose {
                 eprintln!(
-                    "Warning: No valid descendants found for {:?} (taxid:{}) (rank: {})",
+                    "Warning: No valid ancestors found for assignment {:?} (taxid:{}) (rank: {})",
                     record.assigned_name,
                     node,
                     tax.find_rank(node)
@@ -181,17 +209,6 @@ fn load_rank_assignments<Tax: Taxonomy>(
                         .unwrap_or(""),
                 );
             }
-        } else {
-            assignments.dropped_records += 1;
-
-            eprintln!(
-                "Warning: No valid ancestors found for {:?} (taxid:{}) (rank: {})",
-                record.assigned_name,
-                node,
-                tax.find_rank(node)
-                    .and_then(|sym| tax.rank_sym_str(sym))
-                    .unwrap_or(""),
-            );
         }
 
         assignments.total_records += 1;
@@ -200,19 +217,9 @@ fn load_rank_assignments<Tax: Taxonomy>(
     Ok(assignments)
 }
 
-pub struct CrisprMatchData {
-    crispr_matches: VirusHostMapping,
-}
-
-fn load_crispr_match_data(crispr_match_path: &Path) -> Result<CrisprMatchData> {
-    let file = File::open(crispr_match_path)?;
-    let crispr_matches = VirusHostMapping::read_tsv(file)?;
-
-    Ok(CrisprMatchData { crispr_matches, })
-}
-
 struct RefinementContext<Tax: Taxonomy> {
     taxonomy: Tax,
+    verbose: bool,
     rank_sym: Tax::RankSym,
     rank_assignments: RankAssignments,
     filters: Vec<VpfClassRecordFilter>,
@@ -224,7 +231,7 @@ impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
         allow_different_ranks: bool,
         crispr_context: &CE::Context,
         record: VpfClassRecord<S>,
-    ) -> Option<EnrichedVpfClassRecord<'a, S, CE>> {
+    ) -> Result<EnrichedVpfClassRecord<'a, S, CE>, RecordDropReason> {
         let mut enriched = EnrichedVpfClassRecord::<'a, S, CE>::new(record);
 
         let mut found_mismatched_ranks = false;
@@ -247,20 +254,21 @@ impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
 
         if !found_taxids {
             eprintln!(
-                "Warning: No taxids found for classification {}",
+                "Warning: No taxids known for host prediction {}",
                 enriched.vpf_class_record.class_name.as_ref(),
             );
+            return Err(RecordDropReason::UnknownHostTaxId);
         }
 
         if found_mismatched_ranks {
             eprintln!(
-                "Warning: Found taxids for classification {} but had mismatching ranks, skipping (use --allow-different-ranks to disable the check)",
+                "Warning: Found taxids for host prediction {} but had mismatching ranks, skipping (use --allow-different-ranks to disable this check)",
                 enriched.vpf_class_record.class_name.as_ref(),
             );
         }
 
         if !enriched.has_assignments() {
-            return None;
+            return Err(RecordDropReason::NotInAssignment);
         }
 
         let crisprs_found = enriched.crispr_enrichment.enrich(
@@ -271,9 +279,9 @@ impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
         );
 
         if !crisprs_found {
-            None
+            Err(RecordDropReason::NoCrisprInfo)
         } else {
-            Some(enriched)
+            Ok(enriched)
         }
     }
 
@@ -284,7 +292,7 @@ impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
         crispr_context: &CE::Context,
         mut records: Iter,
         output_writer: W,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<EnrichmentSummary<'_, CE>>
     where
         Iter: for<'n> LendingIterator<Item<'n> = csv::Result<VpfClassRecord<&'n str>>>,
     {
@@ -294,44 +302,49 @@ impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
             .from_writer(output_writer);
 
         let filters = &self.filters;
-
         let mut summary = EnrichmentSummary::<CE>::default();
 
         while let Some(record) = records.next() {
             let record = record?;
 
-            if !filters.iter().all(|f| f.apply(&record)) {
-                continue;
+            if !self.verbose && summary.num_records() % 100 == 0 {
+                eprint!("\rProcessing record #{}", summary.num_records());
             }
 
-            let Some(enriched) = self.enrich_vpf_class_record::<&str, CE>(args.allow_different_ranks, crispr_context, record) else {
-                continue;
+            if !filters.iter().all(|f| f.apply(&record)) {
+                summary.account_dropped(RecordDropReason::Filtered, self.verbose);
+            }
+
+            let enriched = match self.enrich_vpf_class_record::<&str, CE>(args.allow_different_ranks, crispr_context, record) {
+                Ok(enriched) => {
+                    summary.account_kept(self.verbose);
+                    enriched
+                },
+                Err(drop_reason) => {
+                    summary.account_dropped(drop_reason, self.verbose);
+                    continue;
+                }
             };
 
-            if args.write_summary.is_some() {
-                summary.account(&enriched);
+            if args.write_class_summary.is_some() {
+                summary.account_classes(&enriched);
             }
 
             csv_writer.serialize(CsvEnrichedVpfClassRecord::<&str, CE>::from(enriched))?;
         }
 
-        if let Some(summary_file) = &args.write_summary {
-            writing_new_file_or_stdout!(summary_file, writer => {
-                let writer = writer.context("Error creating summary file")?;
-
-                summary.write(writer, args.summary_sort_by)
-                    .context("Error writing summary")?;
-            });
-        }
-
         csv_writer.flush()?;
 
-        Ok(())
+        if !self.verbose {
+            eprintln!();
+        }
+
+        Ok(summary)
     }
 }
 
 pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
-    if args.write_summary.as_deref() == Some("-") && args.output == "-" {
+    if args.write_class_summary.as_deref() == Some("-") && args.output == "-" {
         anyhow::bail!(
             "Both --output and --write-summary can't be stdout."
         );
@@ -358,6 +371,7 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
             tax,
             rank_sym,
             args.include_descendants,
+            args.verbose,
             args.metagenomic_assignment.as_ref(),
         )
         .context("Error collecting metagenomic assignment taxids")?;
@@ -367,10 +381,15 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
             rank_assignments.dropped_records, rank_assignments.total_records
         );
 
-        let context = RefinementContext { taxonomy: tax, rank_sym, rank_assignments, filters };
+        let context = RefinementContext {
+            taxonomy: tax,
+            rank_sym,
+            verbose: args.verbose,
+            rank_assignments, filters
+        };
 
         let crispr_matches = if let Some(crispr_match_path) = &args.crispr_matches {
-            let data = load_crispr_match_data(crispr_match_path.as_ref())
+            let data = CrisprMatchData::load(crispr_match_path.as_ref())
                 .context("Loading CRISPR match data")?;
 
             eprintln!(
@@ -389,15 +408,32 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
             .into_lending_iter()
             .into_deserialize::<VpfClassRecordHKT>(None);
 
+        macro_rules! write_summaries {
+            ($summary:ident) => {{
+                if let Some(summary_file) = &args.write_class_summary {
+                    writing_new_file_or_stdout!(summary_file, writer => {
+                        let writer = writer.context("Error creating summary file")?;
+
+                        $summary.write_classes(writer, args.summary_sort_by)
+                            .context("Error writing summary")?;
+                    });
+                }
+
+                $summary.write_drop_stats(io::stderr())?;
+            }}
+        }
+
         writing_new_file_or_stdout!(&args.output, writer => {
             let writer = writer.context("Error creating output file")?;
 
             match crispr_matches {
                 Some(crispr_matches) => {
-                    context.process_vpf_class_records::<CrisprEnrichment, _, _>(&args, &&crispr_matches, csv_records, writer)?;
+                    let summary = context.process_vpf_class_records::<CrisprEnrichment, _, _>(&args, &&crispr_matches, csv_records, writer)?;
+                    write_summaries!(summary);
                 }
                 None => {
-                    context.process_vpf_class_records::<NoEnrichment, _, _>(&args, &NoEnrichmentContext, csv_records, writer)?;
+                    let summary = context.process_vpf_class_records::<NoEnrichment, _, _>(&args, &NoEnrichmentContext, csv_records, writer)?;
+                    write_summaries!(summary);
                 }
             }
         });

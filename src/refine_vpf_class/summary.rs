@@ -6,8 +6,24 @@ use serde::{Serialize, ser::SerializeStruct, Serializer};
 
 use crate::{taxonomy::NodeId, util::csv_flatten_fix::{SerializeFlat, serialize_flat_struct}};
 
-use super::enrichment::{EnrichedVpfClassRecord, Enrichment};
+use super::enrichment::{EnrichedVpfClassRecord, Enrichment, NoEnrichment, CrisprEnrichment};
 
+
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum RecordDropReason {
+    Filtered,
+    UnknownHostTaxId,
+    NotInAssignment,
+    NoCrisprInfo,
+}
+
+#[derive(Default)]
+pub struct RecordDropStats {
+    num_filtered: u32,
+    num_unknown_host_taxid: u32,
+    num_not_in_assignment: u32,
+    num_no_crispr_info: u32,
+}
 
 struct ClassData<'a, CE: Enrichment> {
     virus_count: u32,
@@ -75,16 +91,63 @@ pub enum SummarySortBy {
 
 pub struct EnrichmentSummary<'a, CE: Enrichment> {
     class_data: HashMap<String, ClassData<'a, CE>>,
+    dropped: RecordDropStats,
+    num_records: u32,
 }
 
 impl<'a, CE: Enrichment> Default for EnrichmentSummary<'a, CE> {
     fn default() -> Self {
-        Self { class_data: Default::default() }
+        Self {
+            class_data: Default::default(),
+            dropped: Default::default(),
+            num_records: 0,
+        }
     }
 }
 
 impl<'a, CE: Enrichment> EnrichmentSummary<'a, CE> {
-    pub fn account<S: AsRef<str>>(&mut self, record: &EnrichedVpfClassRecord<'a, S, CE>) {
+    pub fn num_records(&self) -> u32 {
+        self.num_records
+    }
+
+    pub fn account_kept(&mut self, _verbose: bool) {
+        self.num_records += 1;
+    }
+
+    pub fn account_dropped(&mut self, reason: RecordDropReason, verbose: bool) {
+        self.num_records += 1;
+
+        use RecordDropReason::*;
+
+        macro_rules! explain {
+            ($fmt_text:literal) => {{
+                if verbose {
+                    eprintln!($fmt_text, self.num_records);
+                }
+            }}
+        }
+
+        match reason {
+            Filtered => {
+                self.dropped.num_filtered += 1;
+                explain!("Record #{} dropped by --filter");
+            }
+            UnknownHostTaxId => {
+                self.dropped.num_unknown_host_taxid += 1;
+                explain!("Record #{} dropped because the host prediction had no matching taxids");
+            }
+            NotInAssignment => {
+                self.dropped.num_not_in_assignment += 1;
+                explain!("Record #{} dropped because it had no relatives in the assignment");
+            }
+            NoCrisprInfo => {
+                self.dropped.num_no_crispr_info += 1;
+                explain!("Record #{} dropped because it had no relatives in the assignment");
+            }
+        }
+    }
+
+    pub fn account_classes<S: AsRef<str>>(&mut self, record: &EnrichedVpfClassRecord<'a, S, CE>) {
         let class_name = record.vpf_class_record.class_name.as_ref();
 
         self
@@ -96,16 +159,16 @@ impl<'a, CE: Enrichment> EnrichmentSummary<'a, CE> {
             .add(record);
     }
 
-    pub fn write<W: io::Write>(self, writer: W, sort: SummarySortBy) -> csv::Result<()> {
+    pub fn write_classes<W: io::Write>(&self, writer: W, sort: SummarySortBy) -> csv::Result<()> {
         let mut class_stats = self
             .class_data
-            .into_iter()
+            .iter()
             .map(|(class_name, data)| ClassStats::<CE> {
-                class_name,
+                class_name: class_name.clone(),
                 virus_count: data.virus_count as i32,
                 num_assigned_taxids: data.assigned_taxids.len() as i32,
                 num_assigned_contigs: data.assigned_contigs.len() as i32,
-                crispr_enrichment_stats: data.crispr_enrichment_data.into(),
+                crispr_enrichment_stats: data.crispr_enrichment_data.clone().into(),
             })
             .collect_vec();
 
@@ -126,6 +189,48 @@ impl<'a, CE: Enrichment> EnrichmentSummary<'a, CE> {
         }
 
         csv_writer.flush()?;
+        Ok(())
+    }
+}
+
+fn write_basic_drop_stats<W: io::Write>(mut w: W, dropped: &RecordDropStats) -> io::Result<()> {
+    writeln!(
+        &mut w,
+        "{} records dropped due to --filter",
+        dropped.num_filtered
+    )?;
+
+    writeln!(
+        &mut w,
+        "{} records dropped because the host prediction was not found in the reference taxonomy",
+        dropped.num_unknown_host_taxid
+    )?;
+
+    writeln!(
+        &mut w,
+        "{} records unrelated to the metagenomic assignment dropped",
+        dropped.num_not_in_assignment
+    )?;
+
+    Ok(())
+}
+
+impl<'a> EnrichmentSummary<'a, NoEnrichment> {
+    pub fn write_drop_stats<W: io::Write>(&self, mut w: W) -> io::Result<()> {
+        write_basic_drop_stats(&mut w, &self.dropped)
+    }
+}
+
+impl<'a> EnrichmentSummary<'a, CrisprEnrichment<'a>> {
+    pub fn write_drop_stats<W: io::Write>(&self, mut w: W) -> io::Result<()> {
+        write_basic_drop_stats(&mut w, &self.dropped)?;
+
+        writeln!(
+            &mut w,
+            "{} records with no CRISPR matches dropped",
+            self.dropped.num_no_crispr_info
+        )?;
+
         Ok(())
     }
 }

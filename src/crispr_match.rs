@@ -1,4 +1,4 @@
-use std::{io, path::Path};
+use std::{io, path::Path, fs::File};
 
 use anyhow::Context;
 use clap::Args;
@@ -43,6 +43,19 @@ impl HostVirusMapping {
             &["virus_name", "host_name"],
             |csv_writer, host_name, virus_name| csv_writer.write_record([virus_name, host_name]),
         )
+    }
+}
+
+pub struct CrisprMatchData {
+    pub crispr_matches: VirusHostMapping,
+}
+
+impl CrisprMatchData {
+    pub fn load(crispr_match_path: &Path) -> anyhow::Result<Self> {
+        let file = File::open(crispr_match_path)?;
+        let crispr_matches = VirusHostMapping::read_tsv(file)?;
+
+        Ok(CrisprMatchData { crispr_matches })
     }
 }
 
