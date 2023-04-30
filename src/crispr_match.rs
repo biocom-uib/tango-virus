@@ -6,7 +6,7 @@ use tempdir::TempDir;
 
 use crate::{
     crispr_match::minced_spacers::MincedSpacersPipeline,
-    util::{cli_tools, interned_mapping::InternedMultiMapping, writing_new_file_or_stdout},
+    util::{cli_tools, interned_mapping::InternedMultiMapping, writing_new_file_or_stdout, self},
 };
 
 
@@ -28,6 +28,7 @@ impl VirusHostMapping {
 #[derive(Default)]
 pub struct HostVirusMapping(pub InternedMultiMapping);
 
+#[allow(dead_code)]
 impl HostVirusMapping {
     pub fn read_tsv<R: io::Read>(reader: R) -> anyhow::Result<Self> {
         let mapping = InternedMultiMapping::<_>::read_tsv_with(reader, true, |record| {
@@ -69,19 +70,19 @@ pub struct CrisprMatchArgs {
     work_dir: Option<String>,
 
     /// Path to the MinCED .jar file.
-    #[clap(long = "minced", value_name = "MINCED_JAR")]
+    #[clap(long = "minced", value_name = "MINCED_JAR", env = "METEOR_MINCED_JAR")]
     minced_jar: String,
 
     /// Installation prefix of the NCBI BLAST+ toolkit to use.
-    #[clap(long, help_heading = Some("BLAST Options"))]
+    #[clap(long, help_heading = Some("BLAST Options"), env = "METEOR_BLAST_PREFIX")]
     blast_prefix: Option<String>,
 
     /// Number of threads (blastp -num_threads option).
-    #[clap(long, help_heading = Some("BLAST Options"))]
+    #[clap(long, help_heading = Some("BLAST Options"), env = "METEOR_BLAST_NUM_THREADS")]
     num_threads: Option<i32>,
 
     /// Minimum hit identity % for the blastn search (0-100).
-    #[clap(long, help_heading = Some("BLAST Options"), default_value_t = DEFAULT_PERC_IDENTITY)]
+    #[clap(long, help_heading = Some("BLAST Options"), env = "METEOR_BLAST_PERC_IDENTITY", default_value_t = DEFAULT_PERC_IDENTITY)]
     perc_identity: i32,
 
     /// Do not actually run any external tools, print the command instead.
@@ -151,7 +152,7 @@ pub fn crispr_match(args: CrisprMatchArgs) -> anyhow::Result<()> {
     };
 
     writing_new_file_or_stdout!(&args.output, output_file => {
-        mapping.write_tsv(output_file?)?;
+        util::ignore_broken_pipe(mapping.write_tsv(output_file?))?;
     });
 
     Ok(())

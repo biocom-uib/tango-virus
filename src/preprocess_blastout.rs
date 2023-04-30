@@ -7,7 +7,7 @@ use polars::prelude::{
     col, CsvWriter, GetOutput, IntoSeries, LazyFrame, ListNameSpaceImpl, SerWriter, UniqueKeepStrategy,
 };
 
-use crate::util::blastout;
+use crate::util::{blastout, self};
 use crate::util::filter::FromStrFilter;
 use crate::util::writing_new_file_or_stdout;
 
@@ -184,9 +184,11 @@ pub fn preprocess_blastout(args: PreprocessBlastOutArgs) -> anyhow::Result<()> {
     writing_new_file_or_stdout!(&args.output, writer => {
         let writer = writer.context("Error creating grouped hits file")?;
 
-        CsvWriter::new(writer)
-            .with_delimiter(b'\t')
-            .finish(&mut grouped)?;
+        util::ignore_broken_pipe(
+            CsvWriter::new(writer)
+                .with_delimiter(b'\t')
+                .finish(&mut grouped)
+        )?;
     });
 
     Ok(())

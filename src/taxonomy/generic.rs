@@ -130,7 +130,7 @@ impl Taxonomy for GenericTaxonomy {
             let mut leaves_depths = self
                 .postorder_descendants(self.get_root())
                 .filter(|node| self.is_leaf(*node))
-                .map(|node| self.ancestors(node).count())
+                .map(|node| self.strict_ancestors(node).count())
                 .peekable();
 
             let &depth = leaves_depths.peek().expect("The tree has no leaves");

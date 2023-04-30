@@ -29,11 +29,11 @@ const FORMAT_VERSION: u32 = GenericTaxonomy::FORMAT_VERSION;
 
 #[derive(Deserialize, Serialize)]
 pub struct NcbiTaxonomy<Names> {
-    pub(crate) tree: GenericTaxonomy,
+    tree: GenericTaxonomy,
 
     // old to new
-    pub(crate) merged_taxids: Option<HashMap<TaxId, TaxId>>,
-    pub(crate) contracted_taxids: Option<ContractedNodes>,
+    merged_taxids: Option<HashMap<TaxId, TaxId>>,
+    contracted_taxids: Option<ContractedNodes>,
 
     pub(crate) names: Names,
 }
@@ -76,7 +76,7 @@ impl<Names> NcbiTaxonomy<Names> {
         NcbiTaxonomy {
             tree: self.tree,
             merged_taxids: self.merged_taxids,
-            contracted_taxids: None,
+            contracted_taxids: self.contracted_taxids,
             names: new_names,
         }
     }
@@ -88,9 +88,13 @@ impl<Names> NcbiTaxonomy<Names> {
         NcbiTaxonomy {
             tree: self.tree,
             merged_taxids: self.merged_taxids,
-            contracted_taxids: None,
+            contracted_taxids: self.contracted_taxids,
             names: f(self.names),
         }
+    }
+
+    pub fn without_names(self) -> NcbiTaxonomy<NoNames> {
+        self.with_names(NoNames {})
     }
 }
 
@@ -151,29 +155,24 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
 
     // try to fix bad nodes into actual nodes either through merged NCBI taxids or known contracted
     // nodes
-    fn fixup_node(&self, node: usize) -> Option<NodeId> {
-        if let Some(node) = self.tree.fixup_node(node) {
-            return Some(node);
-        }
+    fn fixup_node(&self, taxid: usize) -> Option<NodeId> {
+        let mut node = taxid;
 
-        match (&self.merged_taxids, &self.contracted_taxids) {
-            (None, None) => None,
+        let merged = self.merged_taxids.as_ref();
+        let get_merged = |n| merged.and_then(|m| m.get(&NodeId(n)));
 
-            (Some(merged), None) => merged
-                .get(&NodeId(node))
-                .copied()
-                .and_then(|node| self.fixup_node(node.0)),
+        let contracted = self.contracted_taxids.as_ref();
+        let get_contracted = |n| contracted.and_then(|c| c.0.get(&NodeId(n)));
 
-            (None, Some(contracted)) => contracted.0.get(&NodeId(node)).copied(),
-
-            (Some(merged), Some(contracted)) => {
-                if let Some(&fixed) = merged.get(&NodeId(node)) {
-                    self.fixup_node(fixed.0)
-                } else if let Some(&fixed) = contracted.0.get(&NodeId(node)) {
-                    self.fixup_node(fixed.0)
-                } else {
-                    None
-                }
+        loop {
+            if let Some(merged_node) = get_merged(node) {
+                node = merged_node.0;
+            } else if let Some(contracted_node) = get_contracted(node) {
+                node = contracted_node.0;
+            } else if let Some(tree_node) = self.tree.fixup_node(node) {
+                return Some(tree_node);
+            } else {
+                return None;
             }
         }
     }

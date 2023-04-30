@@ -1,7 +1,7 @@
 use std::{path::Path, io, marker::PhantomData, collections::HashSet, fs::File};
 
-use anyhow::Context;
 use clap::Args;
+use itertools::Itertools;
 use lending_iterator::{HKT, LendingIterator};
 use serde::{Serialize, Deserialize};
 use string_interner::DefaultSymbol;
@@ -11,13 +11,13 @@ use crate::{
     preprocessed_taxonomy::{with_some_ncbi_or_newick_taxonomy, PreprocessedTaxonomyArgs},
     tango_assign::AssignmentRecord,
     taxonomy::{
-        formats::ncbi::{NamesAssoc, NcbiTaxonomy},
+        formats::ncbi::NcbiTaxonomy,
         NodeId, Taxonomy,
     },
     util::{
         csv_stream::CsvReaderIterExt,
         interned_mapping::{InternedMultiMapping, Interner, PairInterner},
-        maybe_gzdecoder, writing_new_file_or_stdout,
+        maybe_gzdecoder, writing_new_file_or_stdout, self,
     },
 };
 
@@ -237,14 +237,15 @@ pub struct PredictedInteraction<S = String> {
     pub edge_kind: EdgeKind,
 }
 
-struct PredictionContext {
+struct PredictionContext<Tax> {
+    taxonomy: Tax,
     assigned_taxids: HashSet<NodeId>,
     uniprot_virus_mapping: ProteinVirusTaxidMapping,
     string_uniprot_mapping: StringProteinAliases<ProteinAlias>,
     preferred_source_sym: DefaultSymbol,
 }
 
-impl PredictionContext {
+impl<Names: 'static> PredictionContext<NcbiTaxonomy<Names>> {
     fn inspect_node_from_string_id<'b, 'a: 'b>(
         &'a self,
         string_id: &'b str,
@@ -257,9 +258,11 @@ impl PredictionContext {
             return None;
         };
 
+        let taxid = self.taxonomy.fixup_node(taxid)?;
+
         let mut aliases = self.string_uniprot_mapping.find_aliases(string_id);
 
-        let result = if self.assigned_taxids.contains(&NodeId(taxid)) {
+        let result = if self.assigned_taxids.contains(&taxid) {
             NodeKind::Host(
                 self.string_uniprot_mapping.resolve_alias_name(
                     aliases
@@ -278,12 +281,23 @@ impl PredictionContext {
 
                     let is_preferred_source = alias.source == self.preferred_source_sym;
 
-                    for (hit_virus_name, hit_taxid) in
-                        self.uniprot_virus_mapping.0.lookup(accession)
-                    {
-                        if hit_taxid != taxid {
-                            eprintln!("Warning: Virus TaxID mismatch between StringDB and UniProt BLAST search: {string_id}");
+                    for (hit_virus_name, hit_taxid) in self.uniprot_virus_mapping.0.lookup(accession) {
+                        let Some(hit_taxid) = self.taxonomy.fixup_node(hit_taxid) else {
+                            eprintln!("UniProt BLAST search result taxid not found in the taxonomy: {hit_taxid}");
                             continue;
+                        };
+
+                        if self.taxonomy.are_independent(taxid, hit_taxid) {
+                            match self.taxonomy.lca(taxid, hit_taxid).and_then(|lca| self.taxonomy.find_rank_str(lca)) {
+                                Some("genus") => {
+                                },
+                                r => {
+                                    eprintln!("Warning: Virus TaxID mismatch between StringDB and UniProt BLAST search: {string_id} vs {hit_taxid} (LCA rank: {r:?}");
+                                    eprintln!("STRING: {}", self.taxonomy.strict_ancestors(taxid).map(|n| n.to_string()).join(" - "));
+                                    eprintln!("UniProt: {}", self.taxonomy.strict_ancestors(hit_taxid).map(|n| n.to_string()).join(" - "));
+                                    continue;
+                                }
+                            }
                         }
 
                         if is_preferred_source {
@@ -305,7 +319,7 @@ impl PredictionContext {
             })
         };
 
-        Some((NodeId(taxid), result))
+        Some((taxid, result))
     }
 
     fn process_protein_links_record<'a>(
@@ -323,6 +337,8 @@ impl PredictionContext {
                 if taxid_a != taxid_b {
                     eprintln!(
                         "Warning: Host-host interaction TaxID mismatch: {} - {}",
+
+
                         record.protein_id_a, record.protein_id_b
                     );
                     None
@@ -391,9 +407,9 @@ impl PredictionContext {
 }
 
 
-fn read_assignment_taxids<Names: NamesAssoc + 'static>(
+fn read_assignment_taxids<Tax: Taxonomy>(
     assignment: &Path,
-    taxonomy: &NcbiTaxonomy<Names>,
+    taxonomy: &Tax,
     include_descendants: bool,
 ) -> anyhow::Result<HashSet<NodeId>> {
     let mut taxids = HashSet::new();
@@ -408,7 +424,7 @@ fn read_assignment_taxids<Names: NamesAssoc + 'static>(
     while let Some(record) = csv_reader_iter.next() {
         let taxid = NodeId(record?.assigned_taxid);
 
-        taxids.extend(taxonomy.ancestors(taxid));
+        taxids.extend(taxonomy.strict_ancestors(taxid));
 
         if include_descendants {
             taxids.extend(taxonomy.postorder_descendants(taxid));
@@ -438,36 +454,41 @@ pub fn string_viruses_interactions(args: StringVirusesInteractionsArgs) -> anyho
     let stringdb_dir = args.stringdb_dir.as_ref();
 
     let context = {
-        let uniprot_virus_mapping = read_uniprot_virus_mapping(args.uniprot_virus_mapping.as_ref())
-            .context(format!(
-                "Reading the UniProt - Viral contig name mapping from {}",
-                &args.uniprot_virus_mapping
-            ))?;
-
-        let assigned_taxids = with_some_ncbi_or_newick_taxonomy!(args.taxonomy.deserialize()?.tree,
-            ncbi: taxonomy => {
-                read_assignment_taxids(
-                    args.metagenomic_assignment.as_ref(),
-                    &taxonomy,
-                    args.include_descendants
-                )
-                .context(format!("Reading metagenomic assigment at {}", &args.metagenomic_assignment))?
-            },
+        eprintln!("Reading the reference taxonomy");
+        let taxonomy = with_some_ncbi_or_newick_taxonomy!(args.taxonomy.deserialize()?.tree,
+            ncbi: taxonomy => taxonomy.without_names(),
             newick: _ => {
                 anyhow::bail!("Newick taxonomies are not supported in this utility");
             },
         );
 
-        let string_uniprot_mapping = read_string_uniprot_mapping(stringdb_dir).context(format!(
+        eprintln!("Reading the metagenomic assignment from {}", &args.metagenomic_assignment);
+        let assigned_taxids = read_assignment_taxids(
+            args.metagenomic_assignment.as_ref(),
+            &taxonomy,
+            args.include_descendants
+        )?;
+
+        eprintln!(
+            "Reading the UniProt - viral contig name mapping from {}",
+            &args.uniprot_virus_mapping
+        );
+        let uniprot_virus_mapping = read_uniprot_virus_mapping(args.uniprot_virus_mapping.as_ref())?;
+
+
+        eprintln!(
             "Reading the StringDB - UniProt mapping in {}",
             &args.stringdb_dir
-        ))?;
+        );
+
+        let string_uniprot_mapping = read_string_uniprot_mapping(stringdb_dir)?;
 
         let preferred_source_sym = string_uniprot_mapping
             .get_source_sym("UniProtKB-EI")
             .expect("Could not find StringDB alias source: UniProtKB-EI");
 
         PredictionContext {
+            taxonomy,
             assigned_taxids,
             uniprot_virus_mapping,
             string_uniprot_mapping,
@@ -479,14 +500,16 @@ pub fn string_viruses_interactions(args: StringVirusesInteractionsArgs) -> anyho
 
     let (sender, receiver) = std::sync::mpsc::channel(); // unbounded
 
+    eprintln!("Processing Viruses-StringDB network links...");
+
     let (r1, r2) = rayon::join(
         move || {
             use fetch::string_viruses::FileName::ProteinLinks;
 
             maybe_gzdecoder!(ProteinLinks.open_read(stringdb_dir)?, protein_links_reader => {
                 let mut records = csv::ReaderBuilder::new()
-                    .has_headers(false)
-                    .delimiter(b'\t')
+                    .has_headers(true)
+                    .delimiter(b' ')
                     .from_reader(protein_links_reader)
                     .into_lending_iter()
                     .into_deserialize::<HKT!(fetch::string_viruses::ProteinLinksRecord<&str>)>(None);
@@ -511,7 +534,13 @@ pub fn string_viruses_interactions(args: StringVirusesInteractionsArgs) -> anyho
                     .from_writer(writer?);
 
                 for interaction in receiver {
-                    csv_writer.serialize(interaction)?;
+                    if let Err(e) = csv_writer.serialize(interaction) {
+                        if util::is_broken_pipe(&e) {
+                            break;
+                        } else {
+                            return Err(e.into());
+                        }
+                    }
                 }
             });
 

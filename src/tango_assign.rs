@@ -16,7 +16,7 @@ use crate::preprocessed_taxonomy::{
 };
 use crate::taxonomy::formats::ncbi::{NamesAssoc, NcbiTaxonomy};
 use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
-use crate::util::{blastout, writing_new_file_or_stdout};
+use crate::util::{blastout, writing_new_file_or_stdout, self};
 
 #[derive(Clone, Debug, Default)]
 struct TaxonAnnotations {
@@ -46,8 +46,8 @@ fn annotate_match_count<Tax: LabelledTaxonomy>(
         .copied()
         .try_reduce(|r1id, r2id| {
             taxonomy.lca(r1id, r2id).ok_or_else(|| {
-                let ancestors1 = taxonomy.ancestors(r1id).map(|n| n.0).collect_vec();
-                let ancestors2 = taxonomy.ancestors(r2id).map(|n| n.0).collect_vec();
+                let ancestors1 = taxonomy.strict_ancestors(r1id).map(|n| n.0).collect_vec();
+                let ancestors2 = taxonomy.strict_ancestors(r2id).map(|n| n.0).collect_vec();
                 anyhow::anyhow!(
                     "Error computing the LCA of {:?} ({r1id}) and {:?} ({r2id}) with ancestors\n{ancestors1:?}\nand\n{ancestors2:?}",
                     taxonomy.some_label_of(r1id).unwrap_or(""),
@@ -371,7 +371,7 @@ fn write_assignments(
                 .has_headers(true)
                 .from_writer(writer);
 
-            eprintln!("");
+            eprintln!();
 
             let mut count = 0;
 
@@ -422,11 +422,11 @@ pub fn tango_assign(args: TangoAssignArgs) -> anyhow::Result<()> {
 
     let (rl, rr) = rayon::join(
         move || load_reads_and_produce_assignments(&args.preprocessed_reads, taxonomy, q, sender),
-        move || write_assignments(&args.output, taxonomy, receiver),
+        move || util::ignore_broken_pipe_anyhow(write_assignments(&args.output, taxonomy, receiver)),
     );
 
-    rl?;
     rr?;
+    rl?;
 
     Ok(())
 }

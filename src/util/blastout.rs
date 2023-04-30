@@ -354,7 +354,7 @@ pub fn apply_filters(df: LazyFrame, filters: Vec<BlastOutFilter>) -> LazyFrame {
     }
 }
 
-pub fn global_string_record_predicate(
+pub fn filters_into_string_record_predicate(
     filters: Vec<BlastOutFilter>,
     outfmt: &BlastOutFmt,
 ) -> Option<impl for<'a> Fn(&'a StringRecord) -> Option<bool>> {

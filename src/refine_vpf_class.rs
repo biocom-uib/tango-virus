@@ -18,7 +18,7 @@ use crate::{
         csv_stream::CsvReaderIterExt,
         filter::FromStrFilter,
         vpf_class_record::{self, VpfClassRecord, VpfClassRecordFilter, VpfClassRecordHKT},
-        writing_new_file_or_stdout,
+        writing_new_file_or_stdout, self,
     },
 };
 
@@ -164,7 +164,7 @@ fn load_rank_assignments<Tax: Taxonomy>(
         let node = NodeId(record.assigned_taxid);
 
         let valid_ancestor = iter::once(node)
-            .chain(tax.ancestors(node))
+            .chain(tax.strict_ancestors(node))
             .find(|&ancestor| Some(rank_sym) == tax.find_rank(ancestor));
 
         if let Some(valid_ancestor) = valid_ancestor {
@@ -330,10 +330,16 @@ impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
                 summary.account_classes(&enriched);
             }
 
-            csv_writer.serialize(CsvEnrichedVpfClassRecord::<&str, CE>::from(enriched))?;
+            if let Err(e) = csv_writer.serialize(CsvEnrichedVpfClassRecord::<&str, CE>::from(enriched)) {
+                if util::is_broken_pipe(&e) {
+                    return Ok(summary);
+                } else {
+                    return Err(e.into());
+                }
+            }
         }
 
-        csv_writer.flush()?;
+        util::ignore_broken_pipe(csv_writer.flush())?;
 
         if !self.verbose {
             eprintln!();
@@ -414,8 +420,10 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
                     writing_new_file_or_stdout!(summary_file, writer => {
                         let writer = writer.context("Error creating summary file")?;
 
-                        $summary.write_classes(writer, args.summary_sort_by)
-                            .context("Error writing summary")?;
+                        util::ignore_broken_pipe_anyhow(
+                            $summary.write_classes(writer, args.summary_sort_by)
+                                .context("Error writing summary")
+                        )?;
                     });
                 }
 

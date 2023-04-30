@@ -6,7 +6,7 @@ use itertools::Itertools;
 
 use crate::{
     preprocessed_taxonomy::{with_some_taxonomy, PreprocessedTaxonomyArgs},
-    taxonomy::LabelledTaxonomy,
+    taxonomy::LabelledTaxonomy, util,
 };
 
 /// Obtain lineage information from a list of taxids. The input is provided as a taxid per line on
@@ -22,7 +22,7 @@ pub fn get_lineage_with_taxonomy(taxo: &impl LabelledTaxonomy) -> anyhow::Result
         .delimiter(b'\t')
         .from_writer(std::io::stdout());
 
-    output.write_record(&["taxid", "lineage_taxids", "lineage_names", "lineage_ranks"])?;
+    output.write_record(["taxid", "lineage_taxids", "lineage_names", "lineage_ranks"])?;
 
     let stdin_lines = std::io::stdin().lock().lines();
 
@@ -48,7 +48,7 @@ pub fn get_lineage_with_taxonomy(taxo: &impl LabelledTaxonomy) -> anyhow::Result
             let root = taxo.get_root();
 
             let ancestors = iter::once(taxid)
-                .chain(taxo.ancestors(taxid).filter(|ancestor| *ancestor != root))
+                .chain(taxo.strict_ancestors(taxid).filter(|ancestor| *ancestor != root))
                 .collect_vec()
                 .into_iter()
                 .rev();
@@ -66,7 +66,7 @@ pub fn get_lineage_with_taxonomy(taxo: &impl LabelledTaxonomy) -> anyhow::Result
             let lineage_names = lineage_labels.into_iter().join(";");
             let lineage_ranks = lineage_ranks.into_iter().join(";");
 
-            output.write_record(&[
+            output.write_record([
                 &taxid.to_string(),
                 &lineage_taxids,
                 &lineage_names,
@@ -86,6 +86,6 @@ pub fn get_lineage(args: GetLineageArgs) -> anyhow::Result<()> {
     eprintln!("Loaded taxonomy in {} seconds", now.elapsed().as_secs());
 
     with_some_taxonomy!(&taxonomy.tree, tax => {
-        get_lineage_with_taxonomy(tax)
+        util::ignore_broken_pipe_anyhow(get_lineage_with_taxonomy(tax))
     })
 }

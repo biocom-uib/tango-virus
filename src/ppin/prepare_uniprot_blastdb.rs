@@ -40,7 +40,7 @@ pub struct PrepareUniProtBlastDBArgs {
     skip_makeblastdb: bool,
 
     /// Installation prefix of the NCBI BLAST+ toolkit to use.
-    #[clap(long)]
+    #[clap(long, env = "METEOR_BLAST_PREFIX")]
     blast_prefix: Option<String>,
 
     /// Output BLAST DB path. Default: <WORK_DIR>/blastdb

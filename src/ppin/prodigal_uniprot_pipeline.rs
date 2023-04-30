@@ -6,7 +6,7 @@ use regex::Regex;
 use serde::Deserialize;
 use tempdir::TempDir;
 
-use crate::util::{cli_tools::{self, CliTool}, interned_mapping::InternedMultiMapping, writing_new_file_or_stdout};
+use crate::util::{cli_tools::{self, CliTool}, interned_mapping::InternedMultiMapping, writing_new_file_or_stdout, self};
 
 use super::ProteinVirusTaxidMapping;
 
@@ -183,7 +183,7 @@ pub struct MatchViralProteinsArgs {
     dry_run: bool,
 
     /// Path to the prodigal executable if not in PATH.
-    #[clap(long, help_heading = Some("Prodigal Options"))]
+    #[clap(long, help_heading = Some("Prodigal Options"), env = "METEOR_PRODIGAL_BIN")]
     prodigal_bin: Option<String>,
 
     /// Prodigal procedure (Prodigal 2.x -p flag) to use.
@@ -191,7 +191,7 @@ pub struct MatchViralProteinsArgs {
     prodigal_procedure: String,
 
     /// Installation prefix of the NCBI BLAST+ toolkit to use.
-    #[clap(long, help_heading = Some("BLAST Options"))]
+    #[clap(long, help_heading = Some("BLAST Options"), env = "METEOR_BLAST_PREFIX")]
     blast_prefix: Option<String>,
 
     /// Location of the UniProt BLAST+ database. See `meteor ppi prepare-uniprot-blastdb`.
@@ -199,11 +199,11 @@ pub struct MatchViralProteinsArgs {
     uniprot_blastdb: String,
 
     /// E-value threshold for the blastp search.
-    #[clap(long, help_heading = Some("BLAST Options"), default_value_t = DEFAULT_EVALUE_THRESHOLD)]
+    #[clap(long, help_heading = Some("BLAST Options"), env = "METEOR_BLAST_EVALUE_THRESHOLD", default_value_t = DEFAULT_EVALUE_THRESHOLD)]
     evalue: f32,
 
     /// Number of threads (blastp -num_threads option).
-    #[clap(long, help_heading = Some("BLAST Options"))]
+    #[clap(long, help_heading = Some("BLAST Options"), env = "METEOR_BLAST_NUM_THREADS")]
     num_threads: Option<i32>,
 
     /// Input FASTA of viral contigs.
@@ -259,7 +259,7 @@ pub fn match_viral_proteins(args: MatchViralProteinsArgs) -> anyhow::Result<()> 
     };
 
     writing_new_file_or_stdout!(&args.output, output_file => {
-        mapping.write_tsv(output_file?)?;
+        util::ignore_broken_pipe(mapping.write_tsv(output_file?))?;
     });
 
     Ok(())

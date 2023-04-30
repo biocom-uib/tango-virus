@@ -91,30 +91,39 @@ pub trait Taxonomy: Sized {
     }
 
     /// Does not include node
-    fn ancestors(&self, node: NodeId) -> AncestorsIter<'_, Self> {
+    fn strict_ancestors(&self, node: NodeId) -> AncestorsIter<'_, Self> {
         AncestorsIter {
             taxo: self,
             current: node,
         }
     }
 
+    /// node1 could be node2
+    fn is_ancestor(&self, node1: NodeId, node2: NodeId) -> bool {
+        node1 == node2 || self.strict_ancestors(node2).contains(&node1)
+    }
+
+    fn are_independent(&self, node1: NodeId, node2: NodeId) -> bool {
+        !self.is_ancestor(node1, node2) && !self.is_ancestor(node2, node1)
+    }
+
     fn lca(&self, node1: NodeId, node2: NodeId) -> Option<NodeId> {
         if node1 == node2 {
             Some(node1)
         } else if self.has_uniform_depths().is_some() && self.is_leaf(node1) && self.is_leaf(node2) {
-            self.ancestors(node1)
-                .zip(self.ancestors(node2))
+            self.strict_ancestors(node1)
+                .zip(self.strict_ancestors(node2))
                 .find(|(p1, p2)| p1 == p2)
                 .map(|(p, _)| p)
         } else {
             let parents1 = self
-                .ancestors(node1)
+                .strict_ancestors(node1)
                 .collect_vec()
                 .into_iter()
                 .rev()
                 .chain([node1]);
             let parents2 = self
-                .ancestors(node2)
+                .strict_ancestors(node2)
                 .collect_vec()
                 .into_iter()
                 .rev()
