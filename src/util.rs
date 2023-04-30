@@ -1,3 +1,5 @@
+use flate2::read::GzDecoder;
+
 #[allow(dead_code)]
 pub mod blastout;
 #[allow(dead_code)]
@@ -8,6 +10,7 @@ pub mod csv_stream;
 pub mod filter;
 #[allow(dead_code)]
 pub mod interned_mapping;
+#[allow(dead_code)]
 pub mod progress_monitor;
 pub mod vpf_class_record;
 
@@ -24,6 +27,8 @@ macro_rules! writing_new_file_or_stdout {
         }
     }};
 }
+
+pub(crate) use writing_new_file_or_stdout;
 
 #[cfg(target_family = "unix")]
 fn is_broken_pipe_impl(mut err: &(dyn std::error::Error + 'static)) -> bool {
@@ -87,16 +92,13 @@ where
     result
 }
 
-use flate2::read::GzDecoder;
-pub(crate) use writing_new_file_or_stdout;
-
-
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant, dead_code)]
 pub enum MaybeGzDecoder<R> {
     GzDecoder(GzDecoder<R>),
     Reader(R),
 }
 
+#[allow(unused_macros)]
 macro_rules! maybe_gzdecoder {
     ($reader_expr:expr, $reader_pat:pat => $body:expr $(,)?) => {{
         match $reader_expr {
@@ -106,4 +108,6 @@ macro_rules! maybe_gzdecoder {
     }}
 }
 
+#[allow(unused_imports)]
 pub(crate) use maybe_gzdecoder;
+

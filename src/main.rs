@@ -18,6 +18,7 @@ pub(crate) mod util;
 
 mod crispr_match;
 mod fetch;
+#[cfg(feature = "ppi")]
 mod ppin;
 mod get_lineage;
 mod preprocess_blastout;
@@ -34,6 +35,7 @@ enum Commands {
     RefineVpfClass(refine_vpf_class::RefineVpfClassArgs),
     CrisprMatch(crispr_match::CrisprMatchArgs),
     GetLineage(get_lineage::GetLineageArgs),
+    #[cfg(feature = "ppi")]
     Ppi(ppin::PpiArgs),
 }
 
@@ -66,6 +68,7 @@ fn main() -> anyhow::Result<()> {
         Commands::RefineVpfClass(args) => {
             refine_vpf_class::refine_vpf_class(args)?;
         }
+        #[cfg(feature = "ppi")]
         Commands::Ppi(args) => {
             ppin::ppi(args)?;
         }

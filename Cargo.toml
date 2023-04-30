@@ -19,7 +19,7 @@ newick-rs = "0.2"
 ordered-float = "3.4"
 polars = { version = "~0.26.1", features = ["lazy", "decompress"] }
 progress-streams = "~1.1.0"
-quick-xml = "~0.27.1"
+quick-xml = { version = "~0.27.1", optional = true }
 rayon = "1.6"
 regex = "~1.7.1"
 serde = "1.0"
@@ -36,3 +36,4 @@ tar = "~0.4.38"
 default = ["taxonomy-serialize-cbor", "taxonomy-serialize-json"]
 taxonomy-serialize-json = ["serde_json"]
 taxonomy-serialize-cbor = ["serde_cbor"]
+ppi = ["quick-xml"]
