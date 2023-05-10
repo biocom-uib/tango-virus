@@ -40,6 +40,12 @@ struct ClassStats<CE: Enrichment> {
     crispr_enrichment_stats: CE::SummaryClassStats,
 }
 
+impl RecordDropStats {
+    pub fn total_dropped(&self) -> u32 {
+        self.num_filtered + self.num_unknown_host_taxid + self.num_not_in_assignment + self.num_no_crispr_info
+    }
+}
+
 impl<'a, CE: Enrichment> Default for ClassData<'a, CE> {
     fn default() -> Self {
         Self {
@@ -217,7 +223,15 @@ fn write_basic_drop_stats<W: io::Write>(mut w: W, dropped: &RecordDropStats) -> 
 
 impl<'a> EnrichmentSummary<'a, NoEnrichment> {
     pub fn write_drop_stats<W: io::Write>(&self, mut w: W) -> io::Result<()> {
-        write_basic_drop_stats(&mut w, &self.dropped)
+        write_basic_drop_stats(&mut w, &self.dropped)?;
+
+        writeln!(
+            &mut w,
+            "{} records kept",
+            self.num_records - self.dropped.total_dropped()
+        )?;
+
+        Ok(())
     }
 }
 
@@ -229,6 +243,12 @@ impl<'a> EnrichmentSummary<'a, CrisprEnrichment<'a>> {
             &mut w,
             "{} records with no CRISPR matches dropped",
             self.dropped.num_no_crispr_info
+        )?;
+
+        writeln!(
+            &mut w,
+            "{} records kept",
+            self.num_records - self.dropped.total_dropped()
         )?;
 
         Ok(())
