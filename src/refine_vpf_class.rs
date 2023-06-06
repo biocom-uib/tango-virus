@@ -313,6 +313,7 @@ impl<Tax: LabelledTaxonomy> RefinementContext<Tax> {
 
             if !filters.iter().all(|f| f.apply(&record)) {
                 summary.account_dropped(RecordDropReason::Filtered, self.verbose);
+                continue;
             }
 
             let enriched = match self.enrich_vpf_class_record::<&str, CE>(args.allow_different_ranks, crispr_context, record) {
