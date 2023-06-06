@@ -41,6 +41,7 @@ enum Commands {
 
 /// METEOR: Metagenome and Metavirome Joint Analysis
 #[derive(Parser)]
+#[command(author, version, about)]
 struct Cli {
     #[clap(subcommand)]
     command: Commands,
