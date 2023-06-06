@@ -5,7 +5,7 @@
     hash_set_entry,
     iterator_try_reduce,
     never_type,
-    once_cell,
+    lazy_cell,
     result_flattening,
 )]
 
