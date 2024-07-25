@@ -14,15 +14,14 @@ use crate::{
     refine_vpf_class::enrichment::{CrisprEnrichment, NoEnrichment, NoEnrichmentContext},
     tango_assign::AssignmentRecord,
     taxonomy::{LabelledTaxonomy, NodeId, Taxonomy},
-    util::{
-        csv_stream::CsvReaderIterExt,
-        filter::FromStrFilter,
-        vpf_class_record::{self, VpfClassRecord, VpfClassRecordFilter, VpfClassRecordHKT},
-        writing_new_file_or_stdout, self,
-    },
+    tool::vpf_class::{self, VpfClassRecord, VpfClassRecordFilter, VpfClassRecordHKT},
+    util::{self, csv_stream::CsvReaderIterExt, filter::FromStrFilter, writing_new_file_or_stdout},
 };
 
-use self::{enrichment::{Enrichment, EnrichedVpfClassRecord, CsvEnrichedVpfClassRecord}, summary::{EnrichmentSummary, SummarySortBy, RecordDropReason}};
+use self::{
+    enrichment::{CsvEnrichedVpfClassRecord, EnrichedVpfClassRecord, Enrichment},
+    summary::{EnrichmentSummary, RecordDropReason, SummarySortBy},
+};
 
 pub(crate) mod enrichment;
 pub(crate) mod summary;
@@ -410,7 +409,7 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
             None
         };
 
-        let csv_records = vpf_class_record::vpf_class_records_reader(args.vpf_class_prediction.as_ref())
+        let csv_records = vpf_class::vpf_class_records_reader(args.vpf_class_prediction.as_ref())
             .context("Could not open VPF-Class prediction")?
             .into_lending_iter()
             .into_deserialize::<VpfClassRecordHKT>(None);

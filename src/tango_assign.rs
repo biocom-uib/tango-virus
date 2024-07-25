@@ -16,7 +16,8 @@ use crate::preprocessed_taxonomy::{
 };
 use crate::taxonomy::formats::ncbi::{NamesAssoc, NcbiTaxonomy};
 use crate::taxonomy::{LabelledTaxonomy, NodeId, Taxonomy};
-use crate::util::{blastout, writing_new_file_or_stdout, self};
+use crate::util::{writing_new_file_or_stdout, self};
+use crate::tool::blast::blastout;
 
 #[derive(Clone, Debug, Default)]
 struct TaxonAnnotations {

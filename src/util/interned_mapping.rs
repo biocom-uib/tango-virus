@@ -2,7 +2,7 @@ use std::{collections::{HashMap, HashSet}, hash::Hash, io, marker::PhantomData};
 
 use csv::StringRecord;
 use lending_iterator::prelude::*;
-use string_interner::{StringInterner, DefaultSymbol};
+use string_interner::{backend::Backend, DefaultStringInterner, DefaultSymbol, StringInterner};
 
 use super::csv_stream::CsvReaderIter;
 
@@ -16,9 +16,13 @@ pub trait Interner: Default {
     fn resolve(&self, sym: Self::Symbol) -> Option<Self::Value<'_>>;
 }
 
-impl Interner for StringInterner {
+impl<B: Backend> Interner for StringInterner<B>
+where
+    StringInterner<B>: Default,
+    B::Symbol: Ord + Hash,
+{
     type Value<'a> = &'a str;
-    type Symbol = DefaultSymbol;
+    type Symbol = B::Symbol;
 
     fn get(&self, value: &str) -> Option<Self::Symbol> {
         StringInterner::get(self, value)
@@ -60,7 +64,7 @@ impl<T: Copy + Eq + Ord + Hash> Interner for TrivialInterner<T> {
 }
 
 #[derive(Default)]
-pub struct PairInterner<I1: Interner = StringInterner, I2: Interner = I1>(pub I1, pub I2);
+pub struct PairInterner<I1: Interner = DefaultStringInterner, I2: Interner = I1>(pub I1, pub I2);
 
 impl<I1: Interner, I2: Interner> Interner for PairInterner<I1, I2> {
     type Value<'a> = (I1::Value<'a>, I2::Value<'a>);
@@ -80,11 +84,11 @@ impl<I1: Interner, I2: Interner> Interner for PairInterner<I1, I2> {
     }
 }
 
-pub struct InternedMultiMapping<ValueInterner = StringInterner>
+pub struct InternedMultiMapping<ValueInterner = DefaultStringInterner>
 where
     ValueInterner: Interner,
 {
-    key_interner: StringInterner,
+    key_interner: DefaultStringInterner,
     value_interner: ValueInterner,
 
     mapping: HashMap<DefaultSymbol, HashSet<ValueInterner::Symbol>>,
@@ -113,7 +117,7 @@ impl<ValueInterner> InternedMultiMapping<ValueInterner>
 where
     ValueInterner: Interner,
 {
-    pub fn key_interner(&self) -> &StringInterner {
+    pub fn key_interner(&self) -> &DefaultStringInterner {
         &self.key_interner
     }
 
@@ -293,7 +297,7 @@ where
 }
 
 
-impl InternedMultiMapping<StringInterner> {
+impl InternedMultiMapping<DefaultStringInterner> {
     pub fn read_tsv<R: io::Read>(reader: R, header: bool) -> anyhow::Result<Self> {
         Self::read_tsv_with(reader, header, |record| Ok((&record[0], &record[1])))
     }

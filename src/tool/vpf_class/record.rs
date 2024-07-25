@@ -4,7 +4,7 @@ use lending_iterator::HKT;
 use serde::{Serialize, Deserialize, ser::SerializeStruct};
 use thiserror::Error;
 
-use super::{filter::{self, FromStrFilter}, csv_flatten_fix::SerializeFlat};
+use crate::util::{filter::{self, FromStrFilter}, csv_flatten_fix::SerializeFlat};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VpfClassRecord<S = String> {
@@ -94,4 +94,18 @@ pub fn vpf_class_records_reader(path: &Path) -> csv::Result<csv::Reader<File>> {
         .has_headers(true)
         .delimiter(b'\t')
         .from_path(path)
+}
+
+pub fn vpf_class_record_schema() -> polars::prelude::Schema {
+    use polars::prelude::{DataType, Schema};
+
+    let mut schema = Schema::new();
+
+    schema.with_column("virus_name".into(), DataType::String);
+    schema.with_column("class_name".into(), DataType::String);
+    schema.with_column("membership_ratio".into(), DataType::Float32);
+    schema.with_column("virus_hit_score".into(), DataType::Float32);
+    schema.with_column("confidence_score".into(), DataType::Float32);
+
+    schema
 }

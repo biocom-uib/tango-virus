@@ -6,7 +6,7 @@ use std::sync::Arc;
 use csv::StringRecord;
 use itertools::Itertools;
 use polars::lazy::prelude::{Expr, LazyCsvReader};
-use polars::prelude::{col, LazyFrame, LiteralValue, NullValues, Schema, DataType};
+use polars::prelude::{col, DataType, LazyFileListReader, LazyFrame, LiteralValue, NullValues, Schema};
 
 use thiserror::Error;
 
@@ -17,25 +17,25 @@ pub mod fields {
 
     use polars::datatypes::DataType;
 
-    pub const QSEQID: (&str, DataType) = ("qseqid", DataType::Utf8);
-    pub const QGI: (&str, DataType) = ("qgi", DataType::Utf8);
-    pub const QACC: (&str, DataType) = ("qacc", DataType::Utf8);
-    pub const QACCVER: (&str, DataType) = ("qaccver", DataType::Utf8);
+    pub const QSEQID: (&str, DataType) = ("qseqid", DataType::String);
+    pub const QGI: (&str, DataType) = ("qgi", DataType::String);
+    pub const QACC: (&str, DataType) = ("qacc", DataType::String);
+    pub const QACCVER: (&str, DataType) = ("qaccver", DataType::String);
     pub const QLEN: (&str, DataType) = ("qlen", DataType::Int32);
-    pub const SSEQID: (&str, DataType) = ("sseqid", DataType::Utf8);
-    pub const SALLSEQID: (&str, DataType) = ("sallseqid", DataType::Utf8);
-    pub const SGI: (&str, DataType) = ("sgi", DataType::Utf8);
-    pub const SALLGI: (&str, DataType) = ("sallgi", DataType::Utf8);
-    pub const SACC: (&str, DataType) = ("sacc", DataType::Utf8);
-    pub const SACCVER: (&str, DataType) = ("saccver", DataType::Utf8);
-    pub const SALLACC: (&str, DataType) = ("sallacc", DataType::Utf8);
+    pub const SSEQID: (&str, DataType) = ("sseqid", DataType::String);
+    pub const SALLSEQID: (&str, DataType) = ("sallseqid", DataType::String);
+    pub const SGI: (&str, DataType) = ("sgi", DataType::String);
+    pub const SALLGI: (&str, DataType) = ("sallgi", DataType::String);
+    pub const SACC: (&str, DataType) = ("sacc", DataType::String);
+    pub const SACCVER: (&str, DataType) = ("saccver", DataType::String);
+    pub const SALLACC: (&str, DataType) = ("sallacc", DataType::String);
     pub const SLEN: (&str, DataType) = ("slen", DataType::Int32);
     pub const QSTART: (&str, DataType) = ("qstart", DataType::Int32);
     pub const QEND: (&str, DataType) = ("qend", DataType::Int32);
     pub const SSTART: (&str, DataType) = ("sstart", DataType::Int32);
     pub const SEND: (&str, DataType) = ("send", DataType::Int32);
-    pub const QSEQ: (&str, DataType) = ("qseq", DataType::Utf8);
-    pub const SSEQ: (&str, DataType) = ("sseq", DataType::Utf8);
+    pub const QSEQ: (&str, DataType) = ("qseq", DataType::String);
+    pub const SSEQ: (&str, DataType) = ("sseq", DataType::String);
     pub const EVALUE: (&str, DataType) = ("evalue", DataType::Float32);
     pub const BITSCORE: (&str, DataType) = ("bitscore", DataType::Float32);
     pub const SCORE: (&str, DataType) = ("score", DataType::Float32);
@@ -47,23 +47,23 @@ pub mod fields {
     pub const GAPOPEN: (&str, DataType) = ("gapopen", DataType::Int32);
     pub const GAPS: (&str, DataType) = ("gaps", DataType::Int32);
     pub const PPOS: (&str, DataType) = ("ppos", DataType::Float32);
-    pub const FRAMES: (&str, DataType) = ("frames", DataType::Utf8);
-    pub const QFRAME: (&str, DataType) = ("qframe", DataType::Utf8);
-    pub const SFRAME: (&str, DataType) = ("sframe", DataType::Utf8);
-    pub const BTOP: (&str, DataType) = ("btop", DataType::Utf8);
+    pub const FRAMES: (&str, DataType) = ("frames", DataType::String);
+    pub const QFRAME: (&str, DataType) = ("qframe", DataType::String);
+    pub const SFRAME: (&str, DataType) = ("sframe", DataType::String);
+    pub const BTOP: (&str, DataType) = ("btop", DataType::String);
     pub const STAXID: (&str, DataType) = ("staxid", DataType::Int64);
-    pub const SSCINAME: (&str, DataType) = ("ssciname", DataType::Utf8);
-    pub const SCOMNAME: (&str, DataType) = ("scomname", DataType::Utf8);
-    pub const SBLASTNAME: (&str, DataType) = ("sblastname", DataType::Utf8);
-    pub const SSKINGDOM: (&str, DataType) = ("sskingdom", DataType::Utf8);
-    pub const STAXIDS: (&str, DataType) = ("staxids", DataType::Utf8);
-    pub const SSCINAMES: (&str, DataType) = ("sscinames", DataType::Utf8);
-    pub const SCOMNAMES: (&str, DataType) = ("scomnames", DataType::Utf8);
-    pub const SBLASTNAMES: (&str, DataType) = ("sblastnames", DataType::Utf8);
-    pub const SSKINGDOMS: (&str, DataType) = ("sskingdoms", DataType::Utf8);
-    pub const STITLE: (&str, DataType) = ("stitle", DataType::Utf8);
-    pub const SALLTITLES: (&str, DataType) = ("salltitles", DataType::Utf8);
-    pub const SSTRAND: (&str, DataType) = ("sstrand", DataType::Utf8);
+    pub const SSCINAME: (&str, DataType) = ("ssciname", DataType::String);
+    pub const SCOMNAME: (&str, DataType) = ("scomname", DataType::String);
+    pub const SBLASTNAME: (&str, DataType) = ("sblastname", DataType::String);
+    pub const SSKINGDOM: (&str, DataType) = ("sskingdom", DataType::String);
+    pub const STAXIDS: (&str, DataType) = ("staxids", DataType::String);
+    pub const SSCINAMES: (&str, DataType) = ("sscinames", DataType::String);
+    pub const SCOMNAMES: (&str, DataType) = ("scomnames", DataType::String);
+    pub const SBLASTNAMES: (&str, DataType) = ("sblastnames", DataType::String);
+    pub const SSKINGDOMS: (&str, DataType) = ("sskingdoms", DataType::String);
+    pub const STITLE: (&str, DataType) = ("stitle", DataType::String);
+    pub const SALLTITLES: (&str, DataType) = ("salltitles", DataType::String);
+    pub const SSTRAND: (&str, DataType) = ("sstrand", DataType::String);
     pub const QCOVS: (&str, DataType) = ("qcovs", DataType::Float32);
     pub const QCOVHSP: (&str, DataType) = ("qcovhsp", DataType::Float32);
     pub const QCOVUS: (&str, DataType) = ("qcovus", DataType::Float32);
@@ -132,26 +132,30 @@ pub mod fields {
 pub enum BlastOutFmt {
     // TSV without header
     Six {
-        delimiter: u8,
+        delimiter: char,
         present_columns: Vec<String>,
     },
 
     // like Six, but with comments
     Seven {
-        delimiter: u8,
+        delimiter: char,
         present_columns: Vec<String>,
     },
 }
 
 impl BlastOutFmt {
-    pub fn comment_char(&self) -> Option<u8> {
+    pub fn comment_char(&self) -> Option<char> {
         match &self {
             Self::Six { .. } => None,
-            Self::Seven { .. } => Some(b'#'),
+            Self::Seven { .. } => Some('#'),
         }
     }
 
-    pub fn delimiter(&self) -> u8 {
+    pub fn comment_prefix(&self) -> Option<String> {
+        Some(self.comment_char()?.to_string())
+    }
+
+    pub fn delimiter(&self) -> char {
         match &self {
             Self::Six { delimiter, .. } => *delimiter,
             Self::Seven { delimiter, .. } => *delimiter,
@@ -173,9 +177,9 @@ impl BlastOutFmt {
         let mut builder = csv::ReaderBuilder::new();
 
         builder
-            .delimiter(self.delimiter())
+            .delimiter(self.delimiter() as u8)
             .has_headers(false)
-            .comment(self.comment_char());
+            .comment(self.comment_char().map(|c| c as u8));
 
         builder
     }
@@ -187,16 +191,16 @@ impl FromStr for BlastOutFmt {
     fn from_str(fmt: &str) -> Result<Self, Self::Err> {
         let split_fmt = fmt.split_whitespace().collect_vec();
 
-        fn parse_blast_outfmt_6_or_7(mut fmt_args: &[&str]) -> anyhow::Result<(u8, Vec<String>)> {
+        fn parse_blast_outfmt_6_or_7(mut fmt_args: &[&str]) -> anyhow::Result<(char, Vec<String>)> {
             let delim = if let Some(delim_str) = fmt_args.first().and_then(|s| s.strip_prefix("delim=")) {
                 if let Ok(delim_chr) = delim_str.chars().exactly_one() {
                     fmt_args = &fmt_args[1..];
-                    delim_chr as u8
+                    delim_chr
                 } else {
                     anyhow::bail!("Error parsing delimiter specifier")
                 }
             } else {
-                b'\t'
+                '\t'
             };
 
             let present_columns = if fmt_args.is_empty() {
@@ -243,7 +247,7 @@ pub enum Literal {
 impl From<Literal> for LiteralValue {
     fn from(value: Literal) -> Self {
         match value {
-            Literal::String(s) => LiteralValue::Utf8(s),
+            Literal::String(s) => LiteralValue::String(s),
             Literal::Int64(x) => LiteralValue::Int64(x),
             Literal::UInt64(x) => LiteralValue::UInt64(x),
             Literal::Float64(x) => LiteralValue::Float64(x),
@@ -334,7 +338,7 @@ impl FromStrFilter for BlastOutFilter {
             DataType::Int64 => Literal::Int64(value.parse()?),
             DataType::UInt32 => Literal::Int64(value.parse()?),
             DataType::UInt64 => Literal::Int64(value.parse()?),
-            DataType::Utf8 => Literal::String(value.to_owned()),
+            DataType::String => Literal::String(value.to_owned()),
             _ => return Err(UnsupportedDataType(key.to_owned(), dtype)),
         };
 
@@ -382,16 +386,9 @@ pub fn load_blastout(
     blast_outfmt: &BlastOutFmt,
     wanted_columns: Option<Vec<&str>>,
 ) -> anyhow::Result<LazyFrame> {
-    let (delim, comment_char, present_columns) = match blast_outfmt {
-        BlastOutFmt::Six {
-            delimiter,
-            present_columns,
-        } => (*delimiter, None, present_columns),
-        BlastOutFmt::Seven {
-            delimiter,
-            present_columns,
-        } => (*delimiter, Some(b'#'), present_columns),
-    };
+    let delim = blast_outfmt.delimiter();
+    let comment_prefix = blast_outfmt.comment_prefix();
+    let present_columns = blast_outfmt.present_columns();
 
     let schema = {
         let mut schema = Schema::new();
@@ -400,7 +397,7 @@ pub fn load_blastout(
 
         for present in present_columns {
             if present.starts_with('_') {
-                schema.with_column(format!("_{n_ignored}"), DataType::Utf8);
+                schema.with_column(format!("_{n_ignored}").into(), DataType::String);
                 n_ignored += 1;
             } else {
                 let dtype = if let Some(dtype) = fields::FIELD_TYPES.get(present.as_str()) {
@@ -409,7 +406,7 @@ pub fn load_blastout(
                     anyhow::bail!("Unrecognized BLAST+ column name {present}")
                 };
 
-                schema.with_column(present.clone(), dtype.clone());
+                schema.with_column(present.into(), dtype.clone());
             }
         }
 
@@ -417,10 +414,10 @@ pub fn load_blastout(
     };
 
     let result = LazyCsvReader::new(path)
-        .has_header(false)
-        .with_delimiter(delim)
-        .with_comment_char(comment_char)
-        .with_schema(Arc::new(schema))
+        .with_has_header(false)
+        .with_separator(delim as u8)
+        .with_comment_prefix(comment_prefix.as_deref())
+        .with_schema(Some(Arc::new(schema)))
         .with_null_values(Some(NullValues::AllColumnsSingle("N/A".to_owned())))
         .finish()?;
 

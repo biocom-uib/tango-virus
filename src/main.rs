@@ -1,11 +1,9 @@
 #![feature(
-    absolute_path,
     associated_type_defaults,
     hash_raw_entry,
     hash_set_entry,
     iterator_try_reduce,
     never_type,
-    lazy_cell,
     result_flattening,
 )]
 
@@ -25,6 +23,7 @@ mod preprocess_blastout;
 mod preprocess_taxonomy;
 mod refine_vpf_class;
 mod tango_assign;
+mod tool;
 
 #[derive(Subcommand)]
 enum Commands {

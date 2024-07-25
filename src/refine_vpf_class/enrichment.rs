@@ -6,10 +6,8 @@ use serde::{ser::SerializeStruct, Serialize, Serializer};
 use crate::{
     crispr_match::CrisprMatchData,
     taxonomy::NodeId,
-    util::{
-        csv_flatten_fix::{serialize_flat_struct, SerializeFlat},
-        vpf_class_record::VpfClassRecord,
-    },
+    util::csv_flatten_fix::{serialize_flat_struct, SerializeFlat},
+    tool::vpf_class::VpfClassRecord,
 };
 
 pub trait Enrichment: Default {

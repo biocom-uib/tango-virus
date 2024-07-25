@@ -3,7 +3,7 @@ use std::io::BufRead;
 use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
 
 use serde::{Deserialize, Serialize};
-use string_interner::{symbol::SymbolU32, StringInterner, Symbol};
+use string_interner::{symbol::SymbolU32, DefaultStringInterner, StringInterner, Symbol};
 
 use crate::taxonomy::NodeId;
 
@@ -27,7 +27,7 @@ impl From<NameClassSymbol> for SymbolU32 {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct AllNames {
-    pub name_classes: StringInterner,
+    pub name_classes: DefaultStringInterner,
     pub taxid_to_names: HashMap<TaxId, Vec<(NameClassSymbol, String)>>,
     pub name_to_taxids: HashMap<String, Vec<(NameClassSymbol, TaxId)>>,
 }

@@ -10,19 +10,19 @@ use std::{
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use string_interner::{
-    backend::{Backend, StringBackend},
+    backend::{Backend, DefaultBackend},
     StringInterner, Symbol,
 };
 use thiserror::Error;
 
 use super::{NodeId, Taxonomy, TaxonomyMut, TopologyReplacer};
 
-pub type RankSymbol = <StringBackend as Backend>::Symbol;
+pub type RankSymbol = <DefaultBackend as Backend>::Symbol;
 
 #[derive(Default, Deserialize, Serialize)]
 pub struct GenericTaxonomyRanks {
     pub ranks: HashMap<NodeId, u32>,
-    pub interner: StringInterner,
+    pub interner: StringInterner<DefaultBackend>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -164,7 +164,7 @@ impl Taxonomy for GenericTaxonomy {
         }
     }
 
-    type RankSym = <StringBackend as Backend>::Symbol;
+    type RankSym = <DefaultBackend as Backend>::Symbol;
 
     fn rank_sym_str(&self, rank_sym: Self::RankSym) -> Option<&str> {
         self.ranks.interner.resolve(rank_sym)

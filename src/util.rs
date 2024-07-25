@@ -1,8 +1,6 @@
 use flate2::read::GzDecoder;
 
 #[allow(dead_code)]
-pub mod blastout;
-#[allow(dead_code)]
 pub mod cli_tools;
 pub mod csv_flatten_fix;
 #[allow(dead_code)]
@@ -12,7 +10,6 @@ pub mod filter;
 pub mod interned_mapping;
 #[allow(dead_code)]
 pub mod progress_monitor;
-pub mod vpf_class_record;
 
 macro_rules! writing_new_file_or_stdout {
     ($path:expr, $writer:pat => $body:expr $(,)?) => {{
@@ -39,6 +36,11 @@ fn is_broken_pipe_impl(mut err: &(dyn std::error::Error + 'static)) -> bool {
             }
         } else if let Some(cause) = err.source() {
             err = cause;
+        } else if let Some(polars_err) = err.downcast_ref::<PolarsError>() {
+            // currently (0.41) polars does not report IO { error } as .cause()
+            if let PolarsError::IO { error: io_err, msg: _ } = polars_err {
+                err = io_err.as_ref();
+            }
         } else {
             break;
         }
@@ -110,4 +112,5 @@ macro_rules! maybe_gzdecoder {
 
 #[allow(unused_imports)]
 pub(crate) use maybe_gzdecoder;
+use polars::prelude::PolarsError;
 
