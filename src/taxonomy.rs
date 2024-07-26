@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use self::util::Loop;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct NodeId(pub usize);
+pub struct NodeId(pub u64);
 
 impl Display for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -20,14 +20,14 @@ impl Display for NodeId {
 }
 
 impl FromStr for NodeId {
-    type Err = <usize as FromStr>::Err;
+    type Err = <u64 as FromStr>::Err;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(NodeId(s.parse()?))
     }
 }
 
-impl From<NodeId> for usize {
+impl From<NodeId> for u64 {
     fn from(node: NodeId) -> Self {
         node.0
     }
@@ -36,7 +36,7 @@ impl From<NodeId> for usize {
 pub trait Taxonomy: Sized {
     fn get_root(&self) -> NodeId;
 
-    fn fixup_node(&self, node: usize) -> Option<NodeId>;
+    fn fixup_node(&self, node: u64) -> Option<NodeId>;
 
     fn is_leaf(&self, node: NodeId) -> bool {
         self.iter_children(node).next().is_none()
@@ -173,7 +173,7 @@ impl<'t, Tax: Taxonomy> Taxonomy for &'t Tax {
         (*self).get_root()
     }
 
-    fn fixup_node(&self, node: usize) -> Option<NodeId> {
+    fn fixup_node(&self, node: u64) -> Option<NodeId> {
         (*self).fixup_node(node)
     }
 

@@ -155,7 +155,7 @@ impl<Names: 'static> Taxonomy for NcbiTaxonomy<Names> {
 
     // try to fix bad nodes into actual nodes either through merged NCBI taxids or known contracted
     // nodes
-    fn fixup_node(&self, taxid: usize) -> Option<NodeId> {
+    fn fixup_node(&self, taxid: u64) -> Option<NodeId> {
         let mut node = taxid;
 
         let merged = self.merged_taxids.as_ref();

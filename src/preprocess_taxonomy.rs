@@ -212,6 +212,7 @@ fn preprocess_ncbi(args: &PreprocessNcbiTaxonomyArgs) -> anyhow::Result<Preproce
             SomeTaxonomy::NcbiTaxonomyWithManyNames(tax)
         },
         ordered_ranks,
+        args.contraction_ranks.clone(),
     ))
 }
 
@@ -222,9 +223,16 @@ fn preprocess_newick(args: &PreprocessNewickTaxonomyArgs) -> anyhow::Result<Prep
         anyhow::bail!("Contraction is not supported for Newick taxonomies");
     }
 
+    let contraction_ranks = if args.contract {
+        Some(args.ranks.clone())
+    } else {
+        None
+    };
+
     Ok(PreprocessedTaxonomy::new(
         SomeTaxonomy::NewickTaxonomy(tax),
         Some(args.ranks.clone()),
+        contraction_ranks,
     ))
 }
 

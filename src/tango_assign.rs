@@ -352,7 +352,7 @@ fn load_reads_and_produce_assignments(
 #[derive(Serialize, Deserialize)]
 pub struct AssignmentRecord<S = String> {
     pub query_id: S,
-    pub assigned_taxid: usize,
+    pub assigned_taxid: u64,
     pub assigned_name: S,
     pub assigned_rank: S,
     pub penalty: f32,
@@ -393,7 +393,7 @@ fn write_assignments(
 
                     csv_writer.serialize(AssignmentRecord {
                         query_id: record.query_id.clone(),
-                        assigned_taxid: node.0,
+                        assigned_taxid: node.into(),
                         assigned_name: assigned_name.to_owned(),
                         assigned_rank: rank,
                         penalty,

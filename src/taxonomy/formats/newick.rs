@@ -42,6 +42,9 @@ pub enum NewickLoadError {
     ParseError(#[source] Box<dyn Error + Send + Sync>),
 }
 
+// This module assumes that we can address 64 bits
+const _: () = assert!(std::mem::size_of::<usize>() == std::mem::size_of::<u64>());
+
 impl NewickTaxonomy {
     pub const FORMAT_VERSION: u32 = 0;
 
@@ -54,7 +57,7 @@ impl NewickTaxonomy {
         let mut depths = Vec::new();
 
         let mut new_node = |label: String, depth: usize| {
-            let node_id = NodeId(labels.len());
+            let node_id = NodeId(labels.len() as u64);
 
             labels.push(label.clone());
 
@@ -96,17 +99,17 @@ impl NewickTaxonomy {
             if let Some(child) = frame.orig_children_iter.next() {
                 let child_id = new_node(child.name, depth);
 
-                assert!(parent_ids.len() == child_id.0);
+                assert!(parent_ids.len() as u64 == child_id.0);
                 parent_ids.push(frame.node_id);
                 frame.children.push(child_id);
 
-                assert!(children_lookup.len() == child_id.0);
+                assert!(children_lookup.len() as u64 == child_id.0);
                 children_lookup.push(vec![]);
 
                 stack.push(StackFrame::new(child_id, child.children));
             } else {
                 let popped = stack.pop().unwrap();
-                children_lookup[popped.node_id.0] = popped.children;
+                children_lookup[popped.node_id.0 as usize] = popped.children;
             }
         }
 
@@ -130,12 +133,12 @@ impl NewickTaxonomy {
         Ok(Self::from_simple_tree(simple_tree, ranks))
     }
 
-    pub fn has_node(&self, node: usize) -> bool {
-        node < self.parent_ids.len()
+    pub fn has_node(&self, node: u64) -> bool {
+        node < self.parent_ids.len() as u64
     }
 
     pub fn all_nodes(&self) -> impl Iterator<Item = NodeId> {
-        (0..self.parent_ids.len()).map(NodeId)
+        (0..self.parent_ids.len()).map(|id| NodeId(id as u64))
     }
 }
 
@@ -144,7 +147,7 @@ impl Taxonomy for NewickTaxonomy {
         self.root
     }
 
-    fn fixup_node(&self, node: usize) -> Option<NodeId> {
+    fn fixup_node(&self, node: u64) -> Option<NodeId> {
         if self.has_node(node) {
             Some(NodeId(node))
         } else {
@@ -156,7 +159,7 @@ impl Taxonomy for NewickTaxonomy {
         if node == self.root {
             None
         } else {
-            self.parent_ids.get(node.0).copied()
+            self.parent_ids.get(node.0 as usize).copied()
         }
     }
 
@@ -164,7 +167,7 @@ impl Taxonomy for NewickTaxonomy {
         let mut depths = self
             .all_nodes()
             .filter(|&node| self.is_leaf(node))
-            .map(|node| self.depths[node.0])
+            .map(|node| self.depths[node.0 as usize])
             .peekable();
 
         let &depth = depths.peek().expect("Tree has no leaves");
@@ -179,7 +182,7 @@ impl Taxonomy for NewickTaxonomy {
     type Children<'a> = std::iter::Copied<std::slice::Iter<'a, NodeId>>;
 
     fn iter_children(&self, node: NodeId) -> Self::Children<'_> {
-        self.children_lookup[node.0].iter().copied()
+        self.children_lookup[node.0 as usize].iter().copied()
     }
 
     type RankSym = usize;
@@ -193,7 +196,7 @@ impl Taxonomy for NewickTaxonomy {
     }
 
     fn find_rank(&self, node: NodeId) -> Option<Self::RankSym> {
-        self.depths.get(node.0).copied()
+        self.depths.get(node.0 as usize).copied()
     }
 
     type NodeRanks<'a> = EnumerateAsNodeId<iter::Copied<slice::Iter<'a, Self::RankSym>>>;
@@ -209,7 +212,7 @@ impl LabelledTaxonomy for NewickTaxonomy {
     type Labels<'a> = std::option::IntoIter<&'a str>;
 
     fn labels_of(&self, node: NodeId) -> Self::Labels<'_> {
-        self.labels.get(node.0).map(String::as_str).into_iter()
+        self.labels.get(node.0 as usize).map(String::as_str).into_iter()
     }
 
     type NodesWithLabel<'a> =
@@ -230,7 +233,7 @@ impl<I: Iterator> Iterator for EnumerateAsNodeId<I> {
     fn next(&mut self) -> Option<Self::Item> {
         let (i, x) = self.inner.next()?;
 
-        Some((NodeId(i), x))
+        Some((NodeId(i as u64), x))
     }
 }
 
@@ -255,13 +258,13 @@ fn make_simple_tree(
     children_lookup: &mut Vec<Vec<NodeId>>,
     labels: &mut Vec<String>,
 ) -> SimpleTree {
-    let children = std::mem::take(&mut children_lookup[node_id.0])
+    let children = std::mem::take(&mut children_lookup[node_id.0 as usize])
         .into_iter()
         .map(|child_id| make_simple_tree(child_id, children_lookup, labels))
         .collect();
 
     SimpleTree {
-        name: std::mem::take(&mut labels[node_id.0]),
+        name: std::mem::take(&mut labels[node_id.0 as usize]),
         children,
         length: None,
     }

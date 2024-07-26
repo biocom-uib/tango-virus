@@ -105,7 +105,7 @@ impl Taxonomy for GenericTaxonomy {
         self.root
     }
 
-    fn fixup_node(&self, node: usize) -> Option<NodeId> {
+    fn fixup_node(&self, node: u64) -> Option<NodeId> {
         if self.has_node(NodeId(node)) {
             Some(NodeId(node))
         } else {

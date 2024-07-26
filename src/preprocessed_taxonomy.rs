@@ -19,6 +19,7 @@ pub struct PreprocessedTaxonomy {
     version: u64,
     pub tree: SomeTaxonomy,
     pub ordered_ranks: Option<Vec<String>>,
+    pub contraction_ranks: Option<Vec<String>>,
 }
 
 impl Default for PreprocessedTaxonomyFormat {
@@ -76,16 +77,21 @@ fn deserialize_check_version<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::
 }
 
 impl PreprocessedTaxonomy {
-    pub const FORMAT_VERSION: u64 = 1
+    pub const FORMAT_VERSION: u64 = 2
         + NcbiTaxonomy::<ncbi::SingleClassNames>::FORMAT_VERSION as u64
         + NcbiTaxonomy::<ncbi::AllNames>::FORMAT_VERSION as u64
         + NewickTaxonomy::FORMAT_VERSION as u64;
 
-    pub fn new(tree: SomeTaxonomy, ordered_ranks: Option<Vec<String>>) -> Self {
+    pub fn new(
+        tree: SomeTaxonomy,
+        ordered_ranks: Option<Vec<String>>,
+        contraction_ranks: Option<Vec<String>>,
+    ) -> Self {
         Self {
             version: Self::FORMAT_VERSION,
             tree,
             ordered_ranks,
+            contraction_ranks,
         }
     }
 

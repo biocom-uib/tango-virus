@@ -1,6 +1,7 @@
-use std::{num::ParseFloatError, path::Path, fs::File};
+use std::{fs::File, num::ParseFloatError, path::Path, sync::Arc};
 
 use lending_iterator::HKT;
+use polars::{error::PolarsResult, prelude::{LazyCsvReader, LazyFileListReader, LazyFrame, Schema}};
 use serde::{Serialize, Deserialize, ser::SerializeStruct};
 use thiserror::Error;
 
@@ -89,15 +90,15 @@ impl FromStrFilter for VpfClassRecordFilter {
     }
 }
 
-pub fn vpf_class_records_reader(path: &Path) -> csv::Result<csv::Reader<File>> {
+pub fn records_reader(path: &Path) -> csv::Result<csv::Reader<File>> {
     csv::ReaderBuilder::new()
         .has_headers(true)
         .delimiter(b'\t')
         .from_path(path)
 }
 
-pub fn vpf_class_record_schema() -> polars::prelude::Schema {
-    use polars::prelude::{DataType, Schema};
+pub fn record_schema() -> Schema {
+    use polars::prelude::DataType;
 
     let mut schema = Schema::new();
 
@@ -108,4 +109,12 @@ pub fn vpf_class_record_schema() -> polars::prelude::Schema {
     schema.with_column("confidence_score".into(), DataType::Float32);
 
     schema
+}
+
+pub fn load_as_lazyframe(path: &Path) -> PolarsResult<LazyFrame> {
+    LazyCsvReader::new(path)
+        .with_has_header(true)
+        .with_separator(b'\t')
+        .with_schema(Some(Arc::new(record_schema())))
+        .finish()
 }

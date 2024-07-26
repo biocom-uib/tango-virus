@@ -19,6 +19,7 @@ mod fetch;
 #[cfg(feature = "ppi")]
 mod ppin;
 mod get_lineage;
+mod join_virus_taxonomy;
 mod preprocess_blastout;
 mod preprocess_taxonomy;
 mod refine_vpf_class;

@@ -409,7 +409,7 @@ pub fn refine_vpf_class(args: RefineVpfClassArgs) -> Result<()> {
             None
         };
 
-        let csv_records = vpf_class::vpf_class_records_reader(args.vpf_class_prediction.as_ref())
+        let csv_records = vpf_class::records_reader(args.vpf_class_prediction.as_ref())
             .context("Could not open VPF-Class prediction")?
             .into_lending_iter()
             .into_deserialize::<VpfClassRecordHKT>(None);
